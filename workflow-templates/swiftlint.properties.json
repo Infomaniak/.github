@@ -1,0 +1,8 @@
+{
+    "name": "SwiftLint",
+    "description": "Default linting for iOS projects",
+    "iconName": "octicon file-code",
+    "categories": [
+        "Swift"
+    ]
+}

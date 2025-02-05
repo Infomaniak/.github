@@ -1,0 +1,8 @@
+{
+    "name": "Dependent issues",
+    "description": "Prevent merging before dependent issues are merged",
+    "iconName": "octicon git-branch",
+    "categories": [
+        "code-review"
+    ]
+}

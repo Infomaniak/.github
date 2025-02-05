@@ -1,0 +1,8 @@
+{
+    "name": "Auto assign PR author",
+    "description": "Automatically add author to PR",
+    "iconName": "octicon person-add",
+    "categories": [
+        "code-review"
+    ]
+}

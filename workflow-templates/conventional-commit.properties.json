@@ -1,0 +1,8 @@
+{
+    "name": "Conventional Commits and PRs titles",
+    "description": "Default check for commits messages and PR titles",
+    "iconName": "octicon discussion-closed",
+    "categories": [
+        "code-review"
+    ]
+}
