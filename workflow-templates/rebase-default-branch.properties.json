@@ -1,0 +1,8 @@
+{
+    "name": "Auto-Rebase",
+    "description": "Automatically rebase labeled PRs",
+    "iconName": "octicon git-merge-queue",
+    "categories": [
+        "code-review"
+    ]
+}
