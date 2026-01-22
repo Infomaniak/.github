@@ -1,0 +1,15 @@
+name: Dependent Issues
+
+on:
+  workflow_call:
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: z0al/dependent-issues@950226e7ca8fc43dc209a7febf67c655af3bdb43
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
