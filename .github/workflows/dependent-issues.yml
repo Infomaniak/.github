@@ -7,7 +7,7 @@ on:
         required: true
 
 jobs:
-  check:
+  check_dependencies:
     runs-on: ubuntu-latest
     steps:
       - uses: z0al/dependent-issues@950226e7ca8fc43dc209a7febf67c655af3bdb43

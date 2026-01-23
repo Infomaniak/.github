@@ -4,7 +4,6 @@ on: workflow_call
 
 jobs:
   periphery:
-    name: Scan unused code
     runs-on: [ self-hosted, iOS ]
 
     steps:

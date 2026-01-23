@@ -1,4 +1,4 @@
-name: 'PR and Commit Message Check'
+name: Check Commit Message
 
 on:
   workflow_call:
@@ -8,7 +8,6 @@ on:
 
 jobs:
   check-commit-message:
-    name: Check Commit Message
     runs-on: ubuntu-latest
     steps:
       - name: Check Commit Message

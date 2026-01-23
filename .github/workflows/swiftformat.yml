@@ -1,10 +1,9 @@
-name: SwiftLint
+name: SwiftFormat
 
 on: workflow_call
 
 jobs:
   format:
-    name: SwiftFormat
     runs-on: ubuntu-latest
 
     steps:
