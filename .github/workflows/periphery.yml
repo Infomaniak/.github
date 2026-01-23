@@ -1,6 +1,12 @@
 name: Periphery
 
-on: workflow_call
+on:
+  workflow_call:
+    inputs:
+      setup_step:
+        required: false
+        type: string
+        default: 'echo "Nothing to do"'
 
 jobs:
   periphery:
@@ -10,6 +16,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
       - uses: jdx/mise-action@6d1e696aa24c1aa1bcc1adea0212707c71ab78a8
+      - name: Setup Step
+        run: ${{ inputs.setup_step }}
       - name: Generate
         run: tuist install && tuist generate
       - name: Periphery
