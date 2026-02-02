@@ -2,13 +2,6 @@ name: Validate localization files
 
 on:
   workflow_call:
-    inputs:
-      localizable_path:
-        required: true
-        type: string
-      main_target_localizable_path:
-        required: true
-        type: string
     secrets:
       LOCO_KEY:
         required: true
@@ -22,9 +15,7 @@ jobs:
         uses: actions/checkout@v6
       - name: Setup mise
         uses: jdx/mise-action@6d1e696aa24c1aa1bcc1adea0212707c71ab78a8
-      - name: Create configuration file
-        run: |
-          touch ${GITHUB_WORKSPACE}/.import_loco
-          echo -e "[project]\nlocalizable_path = ${GITHUB_WORKSPACE}/${{ inputs.localizable_path }}\nmain_target_localizable_path = ${GITHUB_WORKSPACE}/${{ inputs.main_target_localizable_path }}\nloco_key = $LOCO_KEY" > ${GITHUB_WORKSPACE}/.import_loco
       - name: Validate
-        run: import_loco project -c --config-file ${GITHUB_WORKSPACE}/.import_loco
+        run: import_loco --check
+        env:
+          LOCO_API_KEY: ${{ secrets.LOCO_KEY }}
