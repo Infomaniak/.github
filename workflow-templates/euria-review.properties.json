@@ -1,0 +1,8 @@
+{
+    "name": "euria-review",
+    "description": "Review the project with Euria-Code",
+    "iconName": "octicon git-pull-request",
+    "categories": [
+        "code-review"
+    ]
+}
