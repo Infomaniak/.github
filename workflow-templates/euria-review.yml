@@ -10,4 +10,4 @@ concurrency:
 
 jobs:
   ai-review:
-    uses: infomaniak/.github/.github/workflows/euria-review.yml
+    uses: infomaniak/.github/.github/workflows/euria-review.yml@<version>
