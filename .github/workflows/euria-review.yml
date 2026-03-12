@@ -8,7 +8,6 @@ jobs:
     env:
       LLM__PROVIDER: "OPENROUTER"
       LLM__META__MODEL: "moonshotai/Kimi-K2.5"
-      LLM__META__MAX_TOKENS: "250000"
       LLM__META__TEMPERATURE: "0.3"
       LLM__HTTP_CLIENT__API_URL: "https://api.infomaniak.com/2/ai/27/openai/v1"
       LLM__HTTP_CLIENT__API_TOKEN: ${{ secrets.EURIA_API_KEY }}
