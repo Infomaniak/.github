@@ -2,6 +2,9 @@ name: Periphery
 
 on:
   workflow_call:
+    secrets:
+      TUIST_TOKEN:
+        required: false
     inputs:
       setup_step:
         required: false
@@ -11,6 +14,8 @@ on:
 jobs:
   periphery:
     runs-on: [ self-hosted, iOS ]
+    env:
+      TUIST_TOKEN: ${{ secrets.TUIST_TOKEN }}
 
     steps:
       - name: Checkout
