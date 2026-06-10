@@ -1,0 +1,8 @@
+{
+    "name": "Android Lint",
+    "description": "Default linting for Android projects",
+    "iconName": "octicon file-code",
+    "categories": [
+        "Android"
+    ]
+}
