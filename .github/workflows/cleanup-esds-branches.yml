@@ -1,0 +1,64 @@
+name: Cleanup ESDS Branches
+
+# Deletes every "esds/x.y.z-*" branch (and closes its associated open PR, if any) whose
+# version is lower than or equal to the version of the branch whose PR was just closed
+# (merged or not). This keeps the repo clean by removing the current release's leftover
+# branches as well as any branch left over from older, now-superseded releases.
+
+on:
+  workflow_call:
+    inputs:
+      head_ref:
+        description: 'Head branch ref of the esds closed pull request (e.g. esds/0.1.2-rc.1783322025938).'
+        required: true
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Delete esds branches and PRs for this version and all previous versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -euo pipefail
+
+          CURRENT_VERSION=$(echo "$HEAD_REF" | sed -E 's#^esds/([0-9]+\.[0-9]+\.[0-9]+)-.*#\1#')
+          if [ "$CURRENT_VERSION" = "$HEAD_REF" ]; then
+            echo "Branch '$HEAD_REF' does not match the expected esds/x.y.z-* pattern, aborting."
+            exit 0
+          fi
+          echo "Merged version: $CURRENT_VERSION"
+
+          git fetch origin 'refs/heads/esds/*:refs/remotes/origin/esds/*' --prune
+
+          git branch -r --list 'origin/esds/*' | sed -E 's#^[[:space:]]*origin/##' | while IFS= read -r branch; do
+            [ -z "$branch" ] && continue
+
+            version=$(echo "$branch" | sed -E 's#^esds/([0-9]+\.[0-9]+\.[0-9]+)-.*#\1#')
+            if [ "$version" = "$branch" ]; then
+              echo "Skipping '$branch': does not match the expected esds/x.y.z-* pattern."
+              continue
+            fi
+
+            lowest=$(printf '%s\n%s\n' "$version" "$CURRENT_VERSION" | sort -V | head -n1)
+            if [ "$lowest" != "$version" ]; then
+              echo "Keeping '$branch': version $version is newer than $CURRENT_VERSION."
+              continue
+            fi
+
+            echo "Cleaning up branch '$branch' (version $version <= $CURRENT_VERSION)"
+
+            gh pr list --state open --head "$branch" --json number --jq '.[].number' | while IFS= read -r pr_number; do
+              [ -z "$pr_number" ] && continue
+              echo "Closing PR #$pr_number for branch '$branch'"
+              gh pr close "$pr_number" --comment "Closed automatically: superseded by the release of version $CURRENT_VERSION." || true
+            done
+
+            git push origin --delete "$branch" || true
+          done
