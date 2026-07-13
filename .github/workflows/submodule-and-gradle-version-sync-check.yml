@@ -1,4 +1,4 @@
-name: Submodule version sync check
+name: Submodule and gradle version sync check
 
 on:
   workflow_call:
