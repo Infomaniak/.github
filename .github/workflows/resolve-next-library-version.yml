@@ -1,0 +1,96 @@
+name: Resolve next library version
+
+# Reusable workflow shared across repos to resolve the version to release.
+# - If "version" is provided, it is used as-is (after format validation).
+# - If "version" is empty, the next version is computed by bumping the
+#   latest published release's major/minor/patch part, as requested via "bump".
+# In both cases, it fails if the resolved version's tag/release already exists.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Explicit version to release (x.x.x). Leave empty to auto-bump from the latest release using "bump"'
+        required: false
+        type: string
+      bump:
+        description: 'Version part to bump automatically when "version" is left empty (major, minor or patch)'
+        required: false
+        type: string
+        default: patch
+    outputs:
+      version:
+        description: 'The resolved version (x.x.x), guaranteed not to already exist as a tag/release'
+        value: ${{ jobs.resolve.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Validate version format
+        if: inputs.version != ''
+        run: |
+          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: version must be in x.x.x format"
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            LATEST_TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+              --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[0].tagName // empty')
+            if [[ -z "$LATEST_TAG" ]]; then
+              echo "Error: no previous release found, please provide an explicit version"
+              exit 1
+            fi
+            if [[ ! "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Error: latest release tag '$LATEST_TAG' is not in x.x.x format"
+              exit 1
+            fi
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            case "${{ inputs.bump }}" in
+              major)
+                VERSION="$((MAJOR + 1)).0.0"
+                ;;
+              minor)
+                VERSION="$MAJOR.$((MINOR + 1)).0"
+                ;;
+              patch)
+                VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+                ;;
+              *)
+                echo "Error: unknown bump type '${{ inputs.bump }}'"
+                exit 1
+                ;;
+            esac
+            echo "Auto-bumped version ($LATEST_TAG -> $VERSION) using bump=${{ inputs.bump }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check version does not already exist
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Error: release $VERSION already exists"
+            exit 1
+          fi
+          if git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$VERSION" | grep -q .; then
+            echo "Error: tag $VERSION already exists"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
