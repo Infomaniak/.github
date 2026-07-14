@@ -1,4 +1,4 @@
-name: Commit tree link
+name: Export commit info
 description: >
   Builds a Markdown link (and short SHA) pointing to the repository tree at a
   given commit, for use in notifications (e.g. KChat release/snapshot messages).
