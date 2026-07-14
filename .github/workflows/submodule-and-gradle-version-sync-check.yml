@@ -1,0 +1,68 @@
+name: Submodule and gradle version sync check
+
+on:
+  workflow_call:
+    inputs:
+      submodule-path:
+        description: "Path to the git submodule that must stay in sync with the version file"
+        required: true
+        type: string
+      variable-name:
+        description: "Name of the version variable to look up in the version file"
+        required: true
+        type: string
+      file:
+        description: "Path to the version file containing the variable"
+        required: false
+        type: string
+        default: "gradle/libs.versions.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  check-submodule-and-version-in-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Check that the submodule and version are updated together
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SUBMODULE_PATH: ${{ inputs.submodule-path }}
+          VARIABLE_NAME: ${{ inputs.variable-name }}
+          VERSION_FILE: ${{ inputs.file }}
+        run: |
+          set -euo pipefail
+
+          SUBMODULE_CHANGED=false
+          if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$SUBMODULE_PATH"; then
+            SUBMODULE_CHANGED=true
+          fi
+
+          get_version() {
+            git show "$1:$VERSION_FILE" | grep -E "^${VARIABLE_NAME}\s*=" | sed -E 's/.*"(.*)".*/\1/'
+          }
+
+          BASE_VERSION="$(get_version "$BASE_SHA")"
+          HEAD_VERSION="$(get_version "$HEAD_SHA")"
+
+          VERSION_CHANGED=false
+          if [ "$BASE_VERSION" != "$HEAD_VERSION" ]; then
+            VERSION_CHANGED=true
+          fi
+
+          echo "$SUBMODULE_PATH submodule changed: $SUBMODULE_CHANGED"
+          echo "$VARIABLE_NAME version changed: $VERSION_CHANGED (base=$BASE_VERSION, head=$HEAD_VERSION)"
+
+          if [ "$SUBMODULE_CHANGED" != "$VERSION_CHANGED" ]; then
+            echo "::error::The $SUBMODULE_PATH submodule reference and the $VARIABLE_NAME version in $VERSION_FILE must always be updated together. submodule changed=$SUBMODULE_CHANGED, $VARIABLE_NAME version changed=$VERSION_CHANGED."
+            exit 1
+          fi
+
+          echo "OK: $SUBMODULE_PATH submodule reference and $VARIABLE_NAME version are in sync."
