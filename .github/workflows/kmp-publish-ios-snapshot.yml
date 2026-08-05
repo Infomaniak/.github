@@ -1,0 +1,185 @@
+# Reusable workflow shared across Kotlin Multiplatform repos to build an ad-hoc
+# iOS snapshot: builds every XCFramework declared in `xcframeworks`, publishes a
+# prerelease GitHub Release with the zipped binaries, and pushes a dedicated
+# `spm-ios-snapshot-<version>-<build-id>` branch with an updated Package.swift
+# so consumers can point at it via SPM while validating in-flight changes.
+name: Publish KMP iOS snapshot
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Snapshot version to build (e.g. 0.1.0)'
+        required: true
+        type: string
+      label:
+        description: >
+          Optional label identifying who/what this snapshot is for (e.g. a developer name or a PR branch).
+          Lets multiple snapshots coexist without overwriting each other. Leave empty for the default single-snapshot behavior.
+        required: false
+        type: string
+        default: ''
+      xcframeworks:
+        description: >
+          JSON array describing every XCFramework to build, e.g.
+          '[{"name":"STCore","module":"STCore","task":"assembleSTCoreReleaseXCFramework"}]'.
+          Each "name" must match the .xcframework.zip file name already referenced in Package.swift.
+        required: true
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove before building, on top of the standard cleanup'
+        required: false
+        type: string
+        default: ''
+      package-swift-path:
+        description: 'Path to the Package.swift file to update'
+        required: false
+        type: string
+        default: 'Package.swift'
+      lib-name:
+        description: 'Human-readable library name used in the KChat notification (e.g. "iOS Calendar")'
+        required: false
+        type: string
+        default: ''
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+    secrets:
+      BOT_MOBILE_GPG_PRIVATE_KEY:
+        required: true
+      BOT_MOBILE_GPG_PASSPHRASE:
+        required: true
+      KCHAT_KMP_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-xcframeworks:
+    name: Build XCFrameworks
+    strategy:
+      matrix:
+        xcframework: ${{ fromJSON(inputs.xcframeworks) }}
+    uses: Infomaniak/.github/.github/workflows/kmp-build-xcframework.yml@feat/factorize-kmp-release-workflows
+    with:
+      name: ${{ matrix.xcframework.name }}
+      module: ${{ matrix.xcframework.module }}
+      task: ${{ matrix.xcframework.task }}
+      rust-targets: ${{ inputs.rust-targets }}
+      clean-paths: ${{ inputs.clean-paths }}
+      submodules: ${{ inputs.submodules }}
+
+  publish-snapshot:
+    name: Publish snapshot release
+    needs: build-xcframeworks
+    runs-on: [ self-hosted, Android ]
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2.4.0
+
+      - name: Download all XCFramework artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xcframework-*
+          path: release
+          merge-multiple: true
+
+      - name: Import bot's GPG key for signing commits
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
+        with:
+          gpg_private_key: ${{ secrets.BOT_MOBILE_GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.BOT_MOBILE_GPG_PASSPHRASE }}
+          git_config_global: true
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Set build identifier and snapshot id
+        run: |
+          echo "BUILD_ID=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+          # Slugify the optional label (lowercase, alnum/dash only) and fold it into the snapshot id,
+          # so distinct labels never collide/overwrite each other's release, tag or branch.
+          LABEL_SLUG=$(echo "${{ inputs.label }}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')
+          if [ -n "$LABEL_SLUG" ]; then
+            echo "SNAPSHOT_ID=$VERSION-$LABEL_SLUG" >> "$GITHUB_ENV"
+          else
+            echo "SNAPSHOT_ID=$VERSION" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clean up previous snapshot releases, tags and branches (same label only)
+        run: |
+          # Only delete previous ios-snapshot-* pre-releases/tags/branches matching this same snapshot id
+          # (version[-label]), so concurrent snapshots for different labels don't overwrite each other.
+          gh release list --json tagName,isPrerelease \
+            --jq ".[] | select(.isPrerelease and (.tagName | startswith(\"ios-snapshot-$SNAPSHOT_ID-\"))) | .tagName" \
+            | while IFS= read -r tag; do
+                gh release delete "$tag" --yes --cleanup-tag || true
+                git push origin --delete "refs/tags/$tag" 2>/dev/null || true
+              done
+          # Delete matching remote spm-ios-snapshot-<same-id>-* branches
+          git ls-remote --heads origin "refs/heads/spm-ios-snapshot-$SNAPSHOT_ID-*" \
+            | awk '{ sub("refs/heads/","",$2); print $2 }' \
+            | while IFS= read -r branch; do git push origin --delete "$branch" || true; done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create snapshot release and upload assets
+        run: |
+          gh release create "ios-snapshot-$SNAPSHOT_ID-$BUILD_ID" \
+            release/*.xcframework.zip \
+            --title "iOS Snapshot $SNAPSHOT_ID ($BUILD_ID)" \
+            --notes "Snapshot build for version $VERSION. Not for production use." \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Package.swift on snapshot branch
+        run: |
+          set -euo pipefail
+          git config user.name "dev-mobile-bot"
+          git config user.email "mobile+github-bot@infomaniak-dev.ch"
+          git checkout -B "spm-ios-snapshot-$SNAPSHOT_ID-$BUILD_ID"
+
+          echo '${{ inputs.xcframeworks }}' | jq -c '.[]' | while read -r entry; do
+            NAME=$(echo "$entry" | jq -r '.name')
+            ZIP="release/$NAME.xcframework.zip"
+            CHECKSUM=$(swift package compute-checksum "$ZIP")
+            URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/ios-snapshot-$SNAPSHOT_ID-$BUILD_ID/${NAME}.xcframework.zip"
+            perl -0777 -pi -e "s|url: \".*${NAME}\.xcframework\.zip\",(\s*)checksum: \".*\"|url: \"$URL\",\1checksum: \"$CHECKSUM\"|g" "${{ inputs.package-swift-path }}"
+          done
+
+          # Push to versioned spm branch (distinct from the release tag to avoid SPM ambiguity)
+          git add "${{ inputs.package-swift-path }}"
+          git commit -m "chore: Update Package.swift snapshot to $SNAPSHOT_ID ($BUILD_ID)"
+          git push origin "spm-ios-snapshot-$SNAPSHOT_ID-$BUILD_ID"
+          echo "SPM_COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify KChat
+        if: inputs.lib-name != ''
+        env:
+          KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+        run: |
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/ios-snapshot-$SNAPSHOT_ID-$BUILD_ID"
+          curl -s -X POST "$KCHAT_KMP_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \":building_construction: *${{ inputs.lib-name }} snapshot $SNAPSHOT_ID* ($BUILD_ID) is available!\n:apple: SPM branch: \`spm-ios-snapshot-$SNAPSHOT_ID-$BUILD_ID\` (commit: \`${{ env.SPM_COMMIT_SHA }}\`)\n:link: $RELEASE_URL\"}"
