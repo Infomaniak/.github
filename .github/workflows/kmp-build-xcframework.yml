@@ -1,0 +1,121 @@
+# Reusable workflow shared across Kotlin Multiplatform repos to build, strip and
+# archive a single XCFramework produced by a Gradle KMP module.
+#
+# Designed to be called once per XCFramework, either directly (e.g. ad-hoc iOS
+# snapshots) or from a `strategy.matrix` job when a repo ships several
+# XCFrameworks (e.g. multiplatform-SwissTransfer: STCore, STDatabase, STNetwork).
+#
+# The resulting zip is uploaded as a workflow artifact named `xcframework-<name>`
+# so downstream jobs can download it (e.g. to update Package.swift and attach it
+# to a GitHub Release).
+name: Build KMP XCFramework
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: 'XCFramework name, e.g. "STCore" (matches the .xcframework directory name produced by Gradle)'
+        required: true
+        type: string
+      module:
+        description: 'Gradle module path segment that owns the XCFramework task, e.g. "STCore"'
+        required: true
+        type: string
+      task:
+        description: 'Gradle task name (without the module prefix) that assembles the release XCFramework, e.g. "assembleSTCoreReleaseXCFramework"'
+        required: true
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      rust-native-release:
+        description: 'Whether to pass -PrustNativeRelease=true to the Gradle build (ignored if rust-targets is empty)'
+        required: false
+        type: boolean
+        default: true
+      clean-paths:
+        description: 'Newline-separated extra paths to remove before building (e.g. Cargo target dirs, other modules'' build dirs), on top of the standard "build <module>/build .gradle release" cleanup'
+        required: false
+        type: string
+        default: ''
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ inputs.name }}.xcframework
+    runs-on: [ self-hosted, Android ]
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+        with:
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+        with:
+          cache-provider: basic
+
+      - name: Setup Rust toolchain
+        if: inputs.rust-targets != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.rust-targets }}
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2.4.0
+
+      - name: Clean build environment
+        run: |
+          ./gradlew clean
+          rm -rf build "${{ inputs.module }}/build" .gradle release
+          if [ -n "${{ inputs.clean-paths }}" ]; then
+            while IFS= read -r path; do
+              [ -n "$path" ] && rm -rf "$path"
+            done <<< "${{ inputs.clean-paths }}"
+          fi
+
+      - name: Build XCFramework
+        run: |
+          if [ "${{ inputs.rust-targets != '' && inputs.rust-native-release }}" = "true" ]; then
+            ./gradlew ":${{ inputs.module }}:${{ inputs.task }}" -PrustNativeRelease=true
+          else
+            ./gradlew ":${{ inputs.module }}:${{ inputs.task }}"
+          fi
+
+      - name: Strip debug symbols from XCFramework slices
+        run: |
+          set -euo pipefail
+          XCFRAMEWORK_DIR="${{ inputs.module }}/build/XCFrameworks/release/${{ inputs.name }}.xcframework"
+          SLICES=$(find "$XCFRAMEWORK_DIR" -type f -name '${{ inputs.name }}')
+          if [ -z "$SLICES" ]; then
+            echo "::error::No binary named '${{ inputs.name }}' found under $XCFRAMEWORK_DIR - check the Gradle output layout or the 'name' input"
+            exit 1
+          fi
+          echo "$SLICES" | while read -r slice; do
+            strip -S "$slice"
+            ranlib "$slice" >/dev/null 2>&1 || true
+          done
+
+      - name: Archive XCFramework
+        run: |
+          mkdir -p release
+          (
+            cd "${{ inputs.module }}/build/XCFrameworks/release" || exit 1
+            zip -r "$GITHUB_WORKSPACE/release/${{ inputs.name }}.xcframework.zip" "${{ inputs.name }}.xcframework"
+          )
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcframework-${{ inputs.name }}
+          path: release/${{ inputs.name }}.xcframework.zip
+          retention-days: 7
