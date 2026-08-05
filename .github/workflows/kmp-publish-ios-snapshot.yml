@@ -68,7 +68,7 @@ jobs:
     strategy:
       matrix:
         xcframework: ${{ fromJSON(inputs.xcframeworks) }}
-    uses: Infomaniak/.github/.github/workflows/kmp-build-xcframework.yml@v2
+    uses: ./.github/workflows/kmp-build-xcframework.yml
     with:
       name: ${{ matrix.xcframework.name }}
       module: ${{ matrix.xcframework.module }}
@@ -83,6 +83,7 @@ jobs:
     runs-on: [ self-hosted, Android ]
     env:
       VERSION: ${{ inputs.version }}
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
     steps:
       - name: Checkout the code
         uses: actions/checkout@v6.0.3
@@ -113,11 +114,16 @@ jobs:
         run: command -v gh >/dev/null 2>&1 || brew install gh
 
       - name: Set build identifier and snapshot id
+        env:
+          LABEL_INPUT: ${{ inputs.label }}
         run: |
-          echo "BUILD_ID=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+          # Include the run id + attempt (unique per workflow run) on top of the timestamp so two
+          # runs for the same version/label started within the same minute never share a build id.
+          echo "BUILD_ID=$(date -u +%Y%m%d%H%M)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
           # Slugify the optional label (lowercase, alnum/dash only) and fold it into the snapshot id,
-          # so distinct labels never collide/overwrite each other's release, tag or branch.
-          LABEL_SLUG=$(echo "${{ inputs.label }}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')
+          # so distinct labels never collide/overwrite each other's release, tag or branch. Read from
+          # the LABEL_INPUT env var (not interpolated directly into the script) to avoid shell injection.
+          LABEL_SLUG=$(printf '%s' "$LABEL_INPUT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')
           if [ -n "$LABEL_SLUG" ]; then
             echo "SNAPSHOT_ID=$VERSION-$LABEL_SLUG" >> "$GITHUB_ENV"
           else
@@ -126,17 +132,22 @@ jobs:
 
       - name: Clean up previous snapshot releases, tags and branches (same label only)
         run: |
-          # Only delete previous ios-snapshot-* pre-releases/tags/branches matching this same snapshot id
-          # (version[-label]), so concurrent snapshots for different labels don't overwrite each other.
+          # Only delete previous ios-snapshot-* pre-releases/tags/branches matching this exact
+          # snapshot id (version[-label]) followed by a 12-digit build id, so concurrent snapshots
+          # for different labels (or unlabeled vs labeled) never collide with each other.
+          PATTERN="^ios-snapshot-$(printf '%s' "$SNAPSHOT_ID" | sed 's/[.[\*^$/]/\\&/g')-[0-9]{12}-[0-9]+-[0-9]+$"
           gh release list --json tagName,isPrerelease \
-            --jq ".[] | select(.isPrerelease and (.tagName | startswith(\"ios-snapshot-$SNAPSHOT_ID-\"))) | .tagName" \
+            --jq --arg pattern "$PATTERN" '.[] | select(.isPrerelease and (.tagName | test($pattern))) | .tagName' \
             | while IFS= read -r tag; do
                 gh release delete "$tag" --yes --cleanup-tag || true
                 git push origin --delete "refs/tags/$tag" 2>/dev/null || true
               done
-          # Delete matching remote spm-ios-snapshot-<same-id>-* branches
-          git ls-remote --heads origin "refs/heads/spm-ios-snapshot-$SNAPSHOT_ID-*" \
-            | awk '{ sub("refs/heads/","",$2); print $2 }' \
+          # Delete matching remote spm-ios-snapshot-<same-id>-<12-digit-build-id> branches
+          BRANCH_PATTERN="^refs/heads/spm-ios-snapshot-$(printf '%s' "$SNAPSHOT_ID" | sed 's/[.[\*^$/]/\\&/g')-[0-9]{12}-[0-9]+-[0-9]+$"
+          git ls-remote --heads origin \
+            | awk '{ print $2 }' \
+            | grep -E "$BRANCH_PATTERN" \
+            | sed 's#refs/heads/##' \
             | while IFS= read -r branch; do git push origin --delete "$branch" || true; done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,11 +186,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify KChat
-        if: inputs.lib-name != ''
+        if: inputs.lib-name != '' && env.KCHAT_KMP_WEBHOOK_URL != ''
         env:
-          KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+          LIB_NAME: ${{ inputs.lib-name }}
         run: |
           RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/ios-snapshot-$SNAPSHOT_ID-$BUILD_ID"
+          TEXT=$(printf ':building_construction: *%s snapshot %s* (%s) is available!\n:apple: SPM branch: `spm-ios-snapshot-%s-%s` (commit: `%s`)\n:link: %s' \
+            "$LIB_NAME" "$SNAPSHOT_ID" "$BUILD_ID" "$SNAPSHOT_ID" "$BUILD_ID" "$SPM_COMMIT_SHA" "$RELEASE_URL")
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
           curl -s -X POST "$KCHAT_KMP_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "{\"text\": \":building_construction: *${{ inputs.lib-name }} snapshot $SNAPSHOT_ID* ($BUILD_ID) is available!\n:apple: SPM branch: \`spm-ios-snapshot-$SNAPSHOT_ID-$BUILD_ID\` (commit: \`${{ env.SPM_COMMIT_SHA }}\`)\n:link: $RELEASE_URL\"}"
+            -d "$PAYLOAD"

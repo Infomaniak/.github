@@ -93,7 +93,14 @@ jobs:
 
       - name: Strip debug symbols from XCFramework slices
         run: |
-          find "${{ inputs.module }}/build/XCFrameworks/release/${{ inputs.name }}.xcframework" -type f -name '${{ inputs.name }}' | while read -r slice; do
+          set -euo pipefail
+          XCFRAMEWORK_DIR="${{ inputs.module }}/build/XCFrameworks/release/${{ inputs.name }}.xcframework"
+          SLICES=$(find "$XCFRAMEWORK_DIR" -type f -name '${{ inputs.name }}')
+          if [ -z "$SLICES" ]; then
+            echo "::error::No binary named '${{ inputs.name }}' found under $XCFRAMEWORK_DIR - check the Gradle output layout or the 'name' input"
+            exit 1
+          fi
+          echo "$SLICES" | while read -r slice; do
             strip -S "$slice"
             ranlib "$slice" >/dev/null 2>&1 || true
           done
