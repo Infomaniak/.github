@@ -68,7 +68,7 @@ jobs:
     strategy:
       matrix:
         xcframework: ${{ fromJSON(inputs.xcframeworks) }}
-    uses: ./.github/workflows/kmp-build-xcframework.yml
+    uses: Infomaniak/.github/.github/workflows/kmp-build-xcframework.yml@v2
     with:
       name: ${{ matrix.xcframework.name }}
       module: ${{ matrix.xcframework.module }}
