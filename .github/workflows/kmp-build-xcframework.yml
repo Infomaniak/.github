@@ -95,7 +95,9 @@ jobs:
         run: |
           set -euo pipefail
           XCFRAMEWORK_DIR="${{ inputs.module }}/build/XCFrameworks/release/${{ inputs.name }}.xcframework"
-          SLICES=$(find "$XCFRAMEWORK_DIR" -type f -name '${{ inputs.name }}')
+          # Exclude .dSYM bundles: they contain a DWARF file with the same basename as the
+          # binary slice, but it's debug-info-only and not a strippable Mach-O executable/library.
+          SLICES=$(find "$XCFRAMEWORK_DIR" -type f -name '${{ inputs.name }}' -not -path '*.dSYM/*')
           if [ -z "$SLICES" ]; then
             echo "::error::No binary named '${{ inputs.name }}' found under $XCFRAMEWORK_DIR - check the Gradle output layout or the 'name' input"
             exit 1
