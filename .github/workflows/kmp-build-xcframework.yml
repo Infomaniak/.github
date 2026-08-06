@@ -91,7 +91,7 @@ jobs:
             ./gradlew ":${{ inputs.module }}:${{ inputs.task }}"
           fi
 
-      - name: Strip debug symbols from XCFramework slices
+      - name: Strip local symbols from XCFramework slices
         run: |
           set -euo pipefail
           XCFRAMEWORK_DIR="${{ inputs.module }}/build/XCFrameworks/release/${{ inputs.name }}.xcframework"
@@ -103,8 +103,10 @@ jobs:
             exit 1
           fi
           echo "$SLICES" | while read -r slice; do
-            strip -S "$slice"
-            ranlib "$slice" >/dev/null 2>&1 || true
+            strip -x "$slice"
+            if file "$slice" | grep -q 'ar archive'; then
+              ranlib "$slice" >/dev/null 2>&1 || true
+            fi
           done
 
       - name: Archive XCFramework
