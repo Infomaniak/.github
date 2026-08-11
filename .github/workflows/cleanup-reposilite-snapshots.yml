@@ -47,18 +47,25 @@ jobs:
           CUTOFF=$(date -u -v-"${{ inputs.max-age-days }}"d +%s 2>/dev/null || date -u -d "-${{ inputs.max-age-days }} days" +%s)
           BASE_URL="${{ inputs.maven-repository-url }}/api/maven/details/${{ inputs.maven-snapshots-repository }}/${{ inputs.maven-group-path }}"
 
+          # "maven-group-path" only points at the group (e.g. com/infomaniak/designsystem):
+          # each directory found there is an artifact ID (e.g. CalendarCore), and the actual
+          # versions to inspect/delete live one level below, under each artifact.
           curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL" \
             | jq -r '.files[]? | select(.type == "DIRECTORY") | .name' \
-            | while IFS= read -r VERSION; do
-                LAST_MODIFIED=$(curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$VERSION" | jq -r '.lastModifiedTime // empty')
-                if [ -z "$LAST_MODIFIED" ]; then
-                  continue
-                fi
-                MODIFIED_TS=$(( $(echo "$LAST_MODIFIED" | cut -c1-10) ))
-                if [ "$MODIFIED_TS" -lt "$CUTOFF" ]; then
-                  echo "Deleting expired snapshot version: $VERSION (last modified $(date -u -d "@$MODIFIED_TS" 2>/dev/null || date -j -f %s "$MODIFIED_TS"))"
-                  curl -s -X DELETE -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "${{ inputs.maven-repository-url }}/${{ inputs.maven-snapshots-repository }}/${{ inputs.maven-group-path }}/$VERSION" || true
-                fi
+            | while IFS= read -r ARTIFACT; do
+                curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$ARTIFACT" \
+                  | jq -r '.files[]? | select(.type == "DIRECTORY") | .name' \
+                  | while IFS= read -r VERSION; do
+                      LAST_MODIFIED=$(curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$ARTIFACT/$VERSION" | jq -r '.lastModifiedTime // empty')
+                      if [ -z "$LAST_MODIFIED" ]; then
+                        continue
+                      fi
+                      MODIFIED_TS=$(( $(echo "$LAST_MODIFIED" | cut -c1-10) ))
+                      if [ "$MODIFIED_TS" -lt "$CUTOFF" ]; then
+                        echo "Deleting expired snapshot version: $ARTIFACT/$VERSION (last modified $(date -u -d "@$MODIFIED_TS" 2>/dev/null || date -j -f %s "$MODIFIED_TS"))"
+                        curl -s -X DELETE -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "${{ inputs.maven-repository-url }}/${{ inputs.maven-snapshots-repository }}/${{ inputs.maven-group-path }}/$ARTIFACT/$VERSION" || true
+                      fi
+                    done
               done
         env:
           REPOSILITE_USERNAME: ${{ secrets.REPOSILITE_USERNAME }}

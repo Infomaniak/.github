@@ -84,6 +84,8 @@ jobs:
     runs-on: [ self-hosted, Android ]
     permissions:
       contents: read
+    env:
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
     steps:
       - name: Normalize version (append -SNAPSHOT if missing)
         run: |
@@ -96,6 +98,7 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.commit-sha || github.sha }}
           submodules: ${{ inputs.submodules }}
 
       - name: Setup Java
@@ -135,7 +138,6 @@ jobs:
       - name: Notify KChat
         if: inputs.lib-name != '' && env.KCHAT_KMP_WEBHOOK_URL != ''
         env:
-          KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
           LIB_NAME: ${{ inputs.lib-name }}
           ARTIFACT_LINE: ${{ inputs.artifact-line }}
           MAVEN_GROUP_PATH: ${{ inputs.maven-group-path }}

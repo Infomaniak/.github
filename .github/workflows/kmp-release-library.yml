@@ -102,8 +102,59 @@ on:
         required: false
 
 jobs:
+  cleanup-stale-release:
+    name: Close stale release PRs/branches/drafts
+    runs-on: [ self-hosted, Android ]
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Resolve default branch
+        id: default-branch
+        run: echo "name=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Close existing release PRs, delete draft releases, and prune release branches
+        # Runs before "resolve-version" (rather than after) so it can also recover from the most
+        # common failure mode: a previous run that pushed a release branch/draft but crashed
+        # before opening the PR. In that case "resolve-version" would otherwise keep failing
+        # forever because the stale draft release already "uses" that version.
+        run: |
+          gh pr list --base "$DEFAULT_BRANCH" --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/")) | [.number, .headRefName] | @tsv' \
+            | while IFS=$'\t' read -r PR_NUMBER BRANCH; do
+                gh pr close "$PR_NUMBER" --comment "Superseded by a new release workflow run."
+                VERSION_TO_DELETE="${BRANCH#release/}"
+                # Only delete if it's a draft release to avoid accidentally removing published releases
+                IS_DRAFT=$(gh release view "$VERSION_TO_DELETE" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")
+                if [ "$IS_DRAFT" = "true" ]; then
+                  gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
+                fi
+                git push origin --delete "refs/heads/$BRANCH" || true
+              done
+
+          # Also prune orphan release branches left over by a run that failed before a PR was
+          # ever opened (so the loop above, which is keyed off open PRs, would miss them).
+          git ls-remote --heads origin "refs/heads/release/*" | awk '{print $2}' | sed 's#refs/heads/##' \
+            | while IFS= read -r BRANCH; do
+                VERSION_TO_DELETE="${BRANCH#release/}"
+                IS_DRAFT=$(gh release view "$VERSION_TO_DELETE" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")
+                if [ "$IS_DRAFT" = "true" ]; then
+                  gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
+                fi
+                git push origin --delete "refs/heads/$BRANCH" || true
+              done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ steps.default-branch.outputs.name }}
+
   resolve-version:
     name: Resolve version
+    needs: cleanup-stale-release
     uses: Infomaniak/.github/.github/workflows/resolve-next-library-version.yml@v2
     with:
       version: ${{ inputs.version }}
@@ -153,23 +204,6 @@ jobs:
             echo "Error: tag $VERSION already exists"
             exit 1
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Close existing release PRs, delete draft releases, and prune release branches
-        run: |
-          gh pr list --base main --state open --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("release/")) | [.number, .headRefName] | @tsv' \
-            | while IFS=$'\t' read -r PR_NUMBER BRANCH; do
-                gh pr close "$PR_NUMBER" --comment "Superseded by a new release workflow run."
-                VERSION_TO_DELETE="${BRANCH#release/}"
-                # Only delete if it's a draft release to avoid accidentally removing published releases
-                IS_DRAFT=$(gh release view "$VERSION_TO_DELETE" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")
-                if [ "$IS_DRAFT" = "true" ]; then
-                  gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
-                fi
-                git push origin --delete "refs/heads/$BRANCH" || true
-              done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -256,6 +290,15 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Resolve default branch
+        id: default-branch
+        run: echo "name=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Open release PR
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
@@ -263,7 +306,7 @@ jobs:
             --title "chore: Release $VERSION" \
             --body "Update \`${{ inputs.package-swift-path }}\` with the new XCFramework URL(s) and checksum(s) for version \`$VERSION\`. Merging this PR will automatically publish the GitHub Release and the Android library on Reposilite." \
             --head "release/$VERSION" \
-            --base main \
+            --base "${{ steps.default-branch.outputs.name }}" \
             --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

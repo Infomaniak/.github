@@ -73,7 +73,7 @@ permissions:
 
 jobs:
   prepare:
-    name: Undraft GitHub Release
+    name: Extract release version
     if: inputs.merged == true && startsWith(inputs.head-ref, 'release/')
     runs-on: [ self-hosted, Android ]
     outputs:
@@ -84,14 +84,6 @@ jobs:
         env:
           BRANCH: ${{ inputs.head-ref }}
         run: echo "version=${BRANCH#release/}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup gh CLI
-        run: command -v gh >/dev/null 2>&1 || brew install gh
-
-      - name: Publish draft release
-        run: gh release edit "${{ steps.version.outputs.version }}" --draft=false --repo ${{ github.repository }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-android:
     name: Publish Android release to Reposilite
@@ -111,10 +103,25 @@ jobs:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PRIVATE_PASSWORD: ${{ secrets.GPG_PRIVATE_PASSWORD }}
 
+  undraft-release:
+    name: Undraft GitHub Release
+    needs: [ prepare, publish-android ]
+    runs-on: [ self-hosted, Android ]
+    steps:
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Publish draft release
+        run: gh release edit "${{ needs.prepare.outputs.version }}" --draft=false --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   notify:
     name: Notify KChat
-    needs: [ prepare, publish-android ]
+    needs: [ prepare, undraft-release ]
     runs-on: ubuntu-latest
+    env:
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
     steps:
       - name: Export commit info
         id: commit-link
@@ -125,7 +132,6 @@ jobs:
       - name: Notify KChat
         if: env.KCHAT_KMP_WEBHOOK_URL != ''
         env:
-          KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
           LIB_NAME: ${{ inputs.lib-name }}
           SPM_LINE: ${{ inputs.spm-line }}
           ANDROID_LINE: ${{ inputs.android-line }}
