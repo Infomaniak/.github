@@ -1,0 +1,269 @@
+# Reusable workflow shared across Kotlin Multiplatform repos to orchestrate a
+# full library release:
+#   1. Resolve the version to release (explicit or auto-bumped).
+#   2. Build every XCFramework declared in `xcframeworks` (one Gradle job per
+#      entry, run in parallel via a matrix).
+#   3. Update Package.swift with the new download URL(s) and checksum(s),
+#      commit that change on a `release/<version>` branch and open a draft
+#      GitHub Release with all the XCFramework zips attached.
+#   4. Publish an Android snapshot to Reposilite Snapshots (so the release
+#      PR can be validated end-to-end before the real Reposilite release,
+#      which only happens once the PR is merged — see kmp-publish-on-release-merge.yml).
+#   5. Open the release PR (`release/<version>` -> default branch). Merging it
+#      is what actually undrafts the GitHub Release and publishes to
+#      Reposilite (via each repo's `publish-release-on-merged.yml` wrapper).
+name: Release KMP library
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to release (x.x.x). Leave empty to auto-bump from the latest release using "bump"'
+        required: false
+        type: string
+      bump:
+        description: 'Version part to bump automatically when "version" is left empty (major, minor or patch)'
+        required: false
+        type: string
+        default: patch
+      xcframeworks:
+        description: >
+          JSON array describing every XCFramework to build, e.g.
+          '[{"name":"STCore","module":"STCore","task":"assembleSTCoreReleaseXCFramework"}]'.
+          Each "name" must match the .xcframework.zip file name already referenced in Package.swift.
+        required: true
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install for the XCFramework build step (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      android-rust-targets:
+        description: 'Comma-separated Rust targets to install for the Android Maven snapshot publish step. Defaults to "rust-targets" if left empty (set explicitly when the Apple and Android Rust target lists differ, e.g. calendar)'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove before building, on top of the standard cleanup'
+        required: false
+        type: string
+        default: ''
+      package-swift-path:
+        description: 'Path to the Package.swift file to update'
+        required: false
+        type: string
+        default: 'Package.swift'
+      snapshot-gradle-task:
+        description: 'Gradle task that publishes the Android snapshot artifacts'
+        required: false
+        type: string
+        default: 'publishAllPublicationToReposiliteRepository'
+      version-property:
+        description: 'Gradle project property used to pass the version to the build'
+        required: false
+        type: string
+        default: 'core.version'
+      lib-name:
+        description: 'Human-readable library name used in the KChat notification (e.g. "Android Calendar")'
+        required: false
+        type: string
+        default: ''
+      artifact-line:
+        description: 'Gradle/Maven coordinate snippet shown in the snapshot KChat notification'
+        required: false
+        type: string
+        default: ''
+      maven-group-path:
+        description: 'Reposilite Snapshots browse path for this library group, e.g. "com/infomaniak/multiplatform_calendar"'
+        required: false
+        type: string
+        default: ''
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+    secrets:
+      REPOSILITE_USERNAME:
+        required: true
+      REPOSILITE_PASSWORD:
+        required: true
+      GPG_KEY_ID:
+        required: true
+      GPG_PRIVATE_KEY:
+        required: true
+      GPG_PRIVATE_PASSWORD:
+        required: true
+      BOT_MOBILE_GPG_PRIVATE_KEY:
+        required: true
+      BOT_MOBILE_GPG_PASSPHRASE:
+        required: true
+      KCHAT_KMP_WEBHOOK_URL:
+        required: false
+
+jobs:
+  resolve-version:
+    name: Resolve version
+    uses: Infomaniak/.github/.github/workflows/resolve-next-library-version.yml@v2
+    with:
+      version: ${{ inputs.version }}
+      bump: ${{ inputs.bump }}
+
+  build-xcframeworks:
+    name: Build XCFrameworks
+    needs: resolve-version
+    strategy:
+      matrix:
+        xcframework: ${{ fromJSON(inputs.xcframeworks) }}
+    uses: Infomaniak/.github/.github/workflows/kmp-build-xcframework.yml@v2
+    with:
+      name: ${{ matrix.xcframework.name }}
+      module: ${{ matrix.xcframework.module }}
+      task: ${{ matrix.xcframework.task }}
+      rust-targets: ${{ inputs.rust-targets }}
+      clean-paths: ${{ inputs.clean-paths }}
+      submodules: ${{ inputs.submodules }}
+
+  release-and-draft:
+    name: Update Package.swift and draft GitHub Release
+    needs: [ resolve-version, build-xcframeworks ]
+    runs-on: [ self-hosted, Android ]
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Check version does not already exist
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Error: release $VERSION already exists"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
+            echo "Error: tag $VERSION already exists"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Close existing release PRs, delete draft releases, and prune release branches
+        run: |
+          gh pr list --base main --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release/")) | [.number, .headRefName] | @tsv' \
+            | while IFS=$'\t' read -r PR_NUMBER BRANCH; do
+                gh pr close "$PR_NUMBER" --comment "Superseded by a new release workflow run."
+                VERSION_TO_DELETE="${BRANCH#release/}"
+                # Only delete if it's a draft release to avoid accidentally removing published releases
+                IS_DRAFT=$(gh release view "$VERSION_TO_DELETE" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")
+                if [ "$IS_DRAFT" = "true" ]; then
+                  gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
+                fi
+                git push origin --delete "refs/heads/$BRANCH" || true
+              done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2.4.0
+
+      - name: Download all XCFramework artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xcframework-*
+          path: release
+          merge-multiple: true
+
+      - name: Update Package.swift with checksum for each XCFramework
+        run: |
+          set -euo pipefail
+          echo '${{ inputs.xcframeworks }}' | jq -c '.[]' | while read -r entry; do
+            NAME=$(echo "$entry" | jq -r '.name')
+            ZIP="release/$NAME.xcframework.zip"
+            CHECKSUM=$(swift package compute-checksum "$ZIP")
+            URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/${NAME}.xcframework.zip"
+            perl -0777 -pi -e "s|url: \".*${NAME}\.xcframework\.zip\",(\s*)checksum: \".*\"|url: \"$URL\",\1checksum: \"$CHECKSUM\"|g" "${{ inputs.package-swift-path }}"
+          done
+
+      - name: Import bot's GPG key for signing commits
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
+        with:
+          gpg_private_key: ${{ secrets.BOT_MOBILE_GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.BOT_MOBILE_GPG_PASSPHRASE }}
+          git_config_global: true
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+
+      - name: Commit Package.swift and push release branch
+        run: |
+          BRANCH="release/$VERSION"
+          git config user.name "dev-mobile-bot"
+          git config user.email "mobile+github-bot@infomaniak-dev.ch"
+          git checkout -b "$BRANCH"
+          git add "${{ inputs.package-swift-path }}"
+          git commit -m "chore: Update Package.swift for release $VERSION"
+          git push origin "$BRANCH"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create draft GitHub Release and upload assets
+        run: |
+          gh release create "$VERSION" \
+            release/*.xcframework.zip \
+            --title "$VERSION" \
+            --generate-notes \
+            --draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-snapshot-android:
+    name: Publish Android snapshot to Reposilite
+    needs: resolve-version
+    uses: Infomaniak/.github/.github/workflows/kmp-publish-reposilite-snapshot.yml@v2
+    with:
+      version: ${{ needs.resolve-version.outputs.version }}-SNAPSHOT
+      commit-sha: ${{ github.sha }}
+      rust-targets: ${{ inputs.android-rust-targets || inputs.rust-targets }}
+      clean-paths: ${{ inputs.clean-paths }}
+      gradle-task: ${{ inputs.snapshot-gradle-task }}
+      version-property: ${{ inputs.version-property }}
+      submodules: ${{ inputs.submodules }}
+      lib-name: ${{ inputs.lib-name }}
+      artifact-line: ${{ inputs.artifact-line }}
+      maven-group-path: ${{ inputs.maven-group-path }}
+    secrets:
+      REPOSILITE_USERNAME: ${{ secrets.REPOSILITE_USERNAME }}
+      REPOSILITE_PASSWORD: ${{ secrets.REPOSILITE_PASSWORD }}
+      GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PRIVATE_PASSWORD: ${{ secrets.GPG_PRIVATE_PASSWORD }}
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+
+  open-release-pr:
+    name: Open release PR
+    needs: [ resolve-version, release-and-draft, publish-snapshot-android ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open release PR
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          gh pr create \
+            --title "chore: Release $VERSION" \
+            --body "Update \`${{ inputs.package-swift-path }}\` with the new XCFramework URL(s) and checksum(s) for version \`$VERSION\`. Merging this PR will automatically publish the GitHub Release and the Android library on Reposilite." \
+            --head "release/$VERSION" \
+            --base main \
+            --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

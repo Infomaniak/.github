@@ -1,0 +1,102 @@
+# https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
+#
+# Reusable workflow shared across Kotlin Multiplatform repos to publish an
+# Android release artifact to our Reposilite instance.
+name: Publish KMP Reposilite Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to release (x.x.x)'
+        required: true
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove on top of the standard "./gradlew clean"'
+        required: false
+        type: string
+        default: ''
+      gradle-task:
+        description: 'Gradle task that publishes the release artifacts'
+        required: false
+        type: string
+        default: 'publishAllPublicationToReposiliteRepository'
+      version-property:
+        description: 'Gradle project property used to pass the version to the build'
+        required: false
+        type: string
+        default: 'core.version'
+      java-version:
+        description: 'JDK version to set up'
+        required: false
+        type: string
+        default: '21'
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+    secrets:
+      REPOSILITE_USERNAME:
+        required: true
+      REPOSILITE_PASSWORD:
+        required: true
+      GPG_KEY_ID:
+        required: true
+      GPG_PRIVATE_KEY:
+        required: true
+      GPG_PRIVATE_PASSWORD:
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: [ self-hosted, Android ]
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6.0.3
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java-version }}
+
+      - name: Setup Rust toolchain
+        if: inputs.rust-targets != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.rust-targets }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+        with:
+          cache-provider: basic
+
+      - name: Perform a Gradle clean
+        run: |
+          ./gradlew clean
+          if [ -n "${{ inputs.clean-paths }}" ]; then
+            while IFS= read -r path; do
+              [ -n "$path" ] && rm -rf "$path"
+            done <<< "${{ inputs.clean-paths }}"
+          fi
+
+      - name: Publish the artifacts
+        run: ./gradlew ${{ inputs.gradle-task }} -P${{ inputs.version-property }}=${{ inputs.version }}
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx5g -Dfile.encoding=UTF-8"
+  reposiliteUsername: ${{ secrets.REPOSILITE_USERNAME }}
+  reposilitePassword: ${{ secrets.REPOSILITE_PASSWORD }}
+  GPG_key_id: ${{ secrets.GPG_KEY_ID }}
+  GPG_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+  GPG_private_password: ${{ secrets.GPG_PRIVATE_PASSWORD }}

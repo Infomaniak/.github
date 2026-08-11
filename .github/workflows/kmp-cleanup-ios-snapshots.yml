@@ -1,0 +1,58 @@
+# https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
+#
+# Reusable workflow shared across Kotlin Multiplatform repos to purge iOS
+# snapshots older than a given age, since nothing tells us if/when a snapshot
+# stops being used. Deletes GitHub prereleases/tags/branches matching
+# `ios-snapshot-*` / `spm-ios-snapshot-*` whose release creation date is older
+# than `max-age-days`.
+#
+# For the Android/Maven side, KMP repos should call
+# cleanup-reposilite-snapshots.yml directly (in addition to this workflow),
+# since that one isn't tied to Kotlin Multiplatform and is also used by
+# Android-only projects (e.g. android-design-system).
+name: Cleanup KMP iOS snapshots
+
+on:
+  workflow_call:
+    inputs:
+      max-age-days:
+        description: 'Delete snapshots older than this many days'
+        required: false
+        type: number
+        default: 15
+
+jobs:
+  cleanup-ios-snapshots:
+    name: Cleanup old iOS snapshots
+    runs-on: [ self-hosted, Android ]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Delete iOS snapshot releases, tags and branches older than max-age-days
+        run: |
+          set -euo pipefail
+          CUTOFF=$(date -u -v-"${{ inputs.max-age-days }}"d +%s 2>/dev/null || date -u -d "-${{ inputs.max-age-days }} days" +%s)
+
+          gh release list --json tagName,isPrerelease,createdAt --limit 1000 \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("ios-snapshot-"))) | [.tagName, .createdAt] | @tsv' \
+            | while IFS=$'\t' read -r TAG CREATED_AT; do
+                CREATED_TS=$(date -u -d "$CREATED_AT" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED_AT" +%s)
+                if [ "$CREATED_TS" -lt "$CUTOFF" ]; then
+                  echo "Deleting expired release/tag: $TAG (created $CREATED_AT)"
+                  gh release delete "$TAG" --yes --cleanup-tag || true
+                  git push origin --delete "refs/tags/$TAG" 2>/dev/null || true
+                  # Best-effort: derive and delete the matching spm-ios-snapshot-* branch (same id, ignoring the trailing build-id)
+                  SNAPSHOT_ID=$(echo "$TAG" | sed -E 's/^ios-snapshot-//; s/-[0-9]{12}-[0-9]+-[0-9]+$//')
+                  git ls-remote --heads origin "refs/heads/spm-ios-snapshot-$SNAPSHOT_ID-*" \
+                    | awk '{ sub("refs/heads/","",$2); print $2 }' \
+                    | while IFS= read -r branch; do git push origin --delete "$branch" || true; done
+                fi
+              done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
