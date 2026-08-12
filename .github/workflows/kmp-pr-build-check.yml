@@ -28,7 +28,7 @@ on:
         description: 'Gradle task(s) that build/verify the whole project for Android (debug + release) + iOS simulator (debug + release framework link) only (no macOS/iOS-device build). Space-separated for multiple tasks. Set to empty string to skip'
         required: false
         type: string
-        default: 'assembleDebug assembleRelease linkDebugFrameworkIosSimulatorArm64 linkReleaseFrameworkIosSimulatorArm64'
+        default: 'assembleAndroidMain linkDebugFrameworkIosSimulatorArm64 linkReleaseFrameworkIosSimulatorArm64'
       android-test-task:
         description: 'Gradle task that runs the Android unit tests (set to empty string to skip)'
         required: false
