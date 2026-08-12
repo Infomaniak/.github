@@ -1,0 +1,169 @@
+# https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
+#
+# Reusable workflow shared across Kotlin Multiplatform repos to publish an
+# Android snapshot artifact to our Reposilite instance.
+name: Publish KMP Reposilite Snapshot
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Snapshot version to publish (e.g. 0.1.0 or 0.1.0-SNAPSHOT). "-SNAPSHOT" is appended automatically if missing'
+        required: true
+        type: string
+      commit-sha:
+        description: 'Commit SHA the snapshot is built from (defaults to the triggering ref if omitted)'
+        required: false
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove when "perform-a-gradle-clean" is requested, on top of the standard "./gradlew clean"'
+        required: false
+        type: string
+        default: ''
+      perform-a-gradle-clean:
+        description: 'Perform a Gradle clean before publishing (always honored for workflow_call; exposed as a toggle for manual workflow_dispatch reruns)'
+        required: false
+        type: boolean
+        default: false
+      gradle-task:
+        description: 'Gradle task that publishes the snapshot artifacts'
+        required: false
+        type: string
+        default: 'publishAllPublicationToReposiliteRepository'
+      version-property:
+        description: 'Gradle project property used to pass the version to the build'
+        required: false
+        type: string
+        default: 'core.version'
+      java-version:
+        description: 'JDK version to set up'
+        required: false
+        type: string
+        default: '21'
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+      lib-name:
+        description: 'Human-readable library name used in the KChat notification (e.g. "Android Calendar")'
+        required: false
+        type: string
+        default: ''
+      artifact-line:
+        description: 'Gradle/Maven coordinate snippet shown in the KChat notification, e.g. "implementation(\"com.infomaniak.multiplatform_calendar:CalendarCore:$VERSION\")"'
+        required: false
+        type: string
+        default: ''
+      maven-group-path:
+        description: 'Reposilite Snapshots browse path for this library group, e.g. "com/infomaniak/multiplatform_calendar"'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      REPOSILITE_USERNAME:
+        required: true
+      REPOSILITE_PASSWORD:
+        required: true
+      GPG_KEY_ID:
+        required: true
+      GPG_PRIVATE_KEY:
+        required: true
+      GPG_PRIVATE_PASSWORD:
+        required: true
+      KCHAT_KMP_WEBHOOK_URL:
+        required: false
+
+jobs:
+  publish:
+    runs-on: [ self-hosted, Android ]
+    permissions:
+      contents: read
+    env:
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+    steps:
+      - name: Normalize version (append -SNAPSHOT if missing)
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ "$VERSION" != *-SNAPSHOT ]]; then
+            VERSION="$VERSION-SNAPSHOT"
+          fi
+          echo "SNAPSHOT_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Checkout sources
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit-sha || github.sha }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java-version }}
+
+      - name: Setup Rust toolchain
+        if: inputs.rust-targets != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.rust-targets }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Perform a Gradle clean, as requested
+        if: inputs.perform-a-gradle-clean
+        run: |
+          ./gradlew clean
+          if [ -n "${{ inputs.clean-paths }}" ]; then
+            while IFS= read -r path; do
+              [ -n "$path" ] && rm -rf "$path"
+            done <<< "${{ inputs.clean-paths }}"
+          fi
+
+      - name: Publish the snapshots
+        run: ./gradlew ${{ inputs.gradle-task }} -P${{ inputs.version-property }}=${{ env.SNAPSHOT_VERSION }}
+
+      - name: Export commit info
+        id: commit-link
+        uses: Infomaniak/.github/actions/export-commit-info@v2
+        with:
+          sha: ${{ inputs.commit-sha || github.sha }}
+
+      - name: Notify KChat
+        if: inputs.lib-name != '' && env.KCHAT_KMP_WEBHOOK_URL != ''
+        env:
+          LIB_NAME: ${{ inputs.lib-name }}
+          ARTIFACT_LINE: ${{ inputs.artifact-line }}
+          MAVEN_GROUP_PATH: ${{ inputs.maven-group-path }}
+        run: |
+          COMMIT_LINK="${{ steps.commit-link.outputs.markdown-link }}"
+          # "{VERSION}" in artifact-line is replaced with the resolved snapshot version.
+          # Real newlines (multi-module artifact-line) are turned into literal "\n" so the
+          # payload stays valid single-line JSON while KChat still renders the line breaks.
+          ARTIFACT_LINE="${ARTIFACT_LINE//\{VERSION\}/${{ env.SNAPSHOT_VERSION }}}"
+          ARTIFACT_LINE="${ARTIFACT_LINE//$'\n'/\\n}"
+          TEXT="$(printf ':android: *%s snapshot %s* is available on Reposilite Snapshots!' "$LIB_NAME" "${{ env.SNAPSHOT_VERSION }}")"
+          if [ -n "$ARTIFACT_LINE" ]; then
+            TEXT="$(printf '%s\n:package: ```%s```' "$TEXT" "$ARTIFACT_LINE")"
+          fi
+          if [ -n "$MAVEN_GROUP_PATH" ]; then
+            TEXT="$(printf '%s\n:link: https://maven.infomaniak.app/snapshots/%s/' "$TEXT" "$MAVEN_GROUP_PATH")"
+          fi
+          TEXT="$(printf '%s\n:pencil: Commit: %s' "$TEXT" "$COMMIT_LINK")"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          curl -s -X POST "$KCHAT_KMP_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx5g -Dfile.encoding=UTF-8"
+  reposiliteUsername: ${{ secrets.REPOSILITE_USERNAME }}
+  reposilitePassword: ${{ secrets.REPOSILITE_PASSWORD }}
+  GPG_key_id: ${{ secrets.GPG_KEY_ID }}
+  GPG_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+  GPG_private_password: ${{ secrets.GPG_PRIVATE_PASSWORD }}

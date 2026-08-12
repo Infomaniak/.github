@@ -1,0 +1,160 @@
+# Reusable workflow shared across Kotlin Multiplatform repos, called from a thin
+# per-repo `publish-release-on-merged.yml` (which must own the actual
+# `pull_request: closed` trigger — reusable workflows cannot declare their own
+# triggers). Undrafts the GitHub Release matching the merged `release/<version>`
+# branch, publishes the Android artifact to Reposilite, and notifies KChat.
+name: Publish KMP release on merge
+
+on:
+  workflow_call:
+    inputs:
+      merged:
+        description: 'Whether the release PR was actually merged (pass through github.event.pull_request.merged)'
+        required: true
+        type: boolean
+      head-ref:
+        description: 'Head branch name of the closed PR (pass through github.event.pull_request.head.ref)'
+        required: true
+        type: string
+      merge-commit-sha:
+        description: 'Merge commit SHA (pass through github.event.pull_request.merge_commit_sha)'
+        required: true
+        type: string
+      rust-targets:
+        description: 'Comma-separated Rust targets to install for the Android publish step. Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove on top of the standard "./gradlew clean" for the Android publish step'
+        required: false
+        type: string
+        default: ''
+      gradle-task:
+        description: 'Gradle task that publishes the release artifacts'
+        required: false
+        type: string
+        default: 'publishAllPublicationToReposiliteRepository'
+      version-property:
+        description: 'Gradle project property used to pass the version to the build'
+        required: false
+        type: string
+        default: 'core.version'
+      lib-name:
+        description: 'Human-readable library name used in the KChat notification (e.g. "Calendar lib")'
+        required: true
+        type: string
+      spm-line:
+        description: 'SPM snippet(s) shown in the KChat notification (may be multi-line for repos with several XCFrameworks)'
+        required: false
+        type: string
+        default: ''
+      android-line:
+        description: 'Gradle/Maven coordinate snippet(s) shown in the KChat notification (may be multi-line for repos with several published modules)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      REPOSILITE_USERNAME:
+        required: true
+      REPOSILITE_PASSWORD:
+        required: true
+      GPG_KEY_ID:
+        required: true
+      GPG_PRIVATE_KEY:
+        required: true
+      GPG_PRIVATE_PASSWORD:
+        required: true
+      KCHAT_KMP_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Extract release version
+    if: inputs.merged == true && startsWith(inputs.head-ref, 'release/')
+    runs-on: [ self-hosted, Android ]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Extract version from branch name
+        id: version
+        env:
+          BRANCH: ${{ inputs.head-ref }}
+        run: echo "version=${BRANCH#release/}" >> "$GITHUB_OUTPUT"
+
+  publish-android:
+    name: Publish Android release to Reposilite
+    needs: prepare
+    permissions: {}
+    uses: Infomaniak/.github/.github/workflows/kmp-publish-reposilite-release.yml@v2
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      rust-targets: ${{ inputs.rust-targets }}
+      clean-paths: ${{ inputs.clean-paths }}
+      gradle-task: ${{ inputs.gradle-task }}
+      version-property: ${{ inputs.version-property }}
+    secrets:
+      REPOSILITE_USERNAME: ${{ secrets.REPOSILITE_USERNAME }}
+      REPOSILITE_PASSWORD: ${{ secrets.REPOSILITE_PASSWORD }}
+      GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PRIVATE_PASSWORD: ${{ secrets.GPG_PRIVATE_PASSWORD }}
+
+  undraft-release:
+    name: Undraft GitHub Release
+    needs: [ prepare, publish-android ]
+    runs-on: [ self-hosted, Android ]
+    steps:
+      - name: Setup gh CLI
+        run: command -v gh >/dev/null 2>&1 || brew install gh
+
+      - name: Publish draft release
+        run: gh release edit "${{ needs.prepare.outputs.version }}" --draft=false --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify:
+    name: Notify KChat
+    needs: [ prepare, undraft-release ]
+    runs-on: ubuntu-latest
+    env:
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+    steps:
+      - name: Export commit info
+        id: commit-link
+        uses: Infomaniak/.github/actions/export-commit-info@v2
+        with:
+          sha: ${{ inputs.merge-commit-sha }}
+
+      - name: Notify KChat
+        if: env.KCHAT_KMP_WEBHOOK_URL != ''
+        env:
+          LIB_NAME: ${{ inputs.lib-name }}
+          SPM_LINE: ${{ inputs.spm-line }}
+          ANDROID_LINE: ${{ inputs.android-line }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/$VERSION"
+          COMMIT_LINK="${{ steps.commit-link.outputs.markdown-link }}"
+          # "{VERSION}" in spm-line/android-line is replaced with the resolved release version.
+          # Real newlines (multi-module lines) are turned into literal "\n" so the payload
+          # stays valid single-line JSON while KChat still renders the line breaks.
+          SPM_LINE="${SPM_LINE//\{VERSION\}/$VERSION}"
+          SPM_LINE="${SPM_LINE//$'\n'/\\n}"
+          ANDROID_LINE="${ANDROID_LINE//\{VERSION\}/$VERSION}"
+          ANDROID_LINE="${ANDROID_LINE//$'\n'/\\n}"
+          TEXT="$(printf ':rocket: *%s %s* is now available!' "$LIB_NAME" "$VERSION")"
+          if [ -n "$SPM_LINE" ]; then
+            TEXT="$(printf '%s\n:apple: ```%s```' "$TEXT" "$SPM_LINE")"
+          fi
+          if [ -n "$ANDROID_LINE" ]; then
+            TEXT="$(printf '%s\n:android: ```%s```' "$TEXT" "$ANDROID_LINE")"
+          fi
+          TEXT="$(printf '%s\n:link: %s\n:pencil: Commit: %s' "$TEXT" "$RELEASE_URL" "$COMMIT_LINK")"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          curl -s -X POST "$KCHAT_KMP_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"

@@ -1,0 +1,111 @@
+# Reusable workflow shared across Kotlin Multiplatform repos to verify, on every
+# PR push, that the library still builds and passes its unit tests on Android
+# and iOS (simulator only, no macOS/iOS-device build). Factors out what used to
+# be duplicated (and slightly diverging) between e.g. multiplatform-calendar's
+# `android.yml`, multiplatform-SwissTransfer's `multiplatform.yml` and
+# multiplatform-authenticator's `build-xcframework.yml`.
+name: KMP PR Build Check
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: 'JDK version to set up'
+        required: false
+        type: string
+        default: '21'
+      rust-targets:
+        description: 'Comma-separated Rust targets to install (e.g. via Gobley/UniFFI). Leave empty to skip Rust setup entirely'
+        required: false
+        type: string
+        default: ''
+      clean-paths:
+        description: 'Newline-separated extra paths to remove before building (e.g. Cargo target dirs, per-module build dirs), on top of the standard "build .gradle release" cleanup'
+        required: false
+        type: string
+        default: ''
+      build-task:
+        description: 'Gradle task(s) that build/verify the whole project for Android (debug + release) + iOS simulator (debug + release framework link) only (no macOS/iOS-device build). Space-separated for multiple tasks. Set to empty string to skip'
+        required: false
+        type: string
+        default: 'assembleDebug assembleRelease linkDebugFrameworkIosSimulatorArm64 linkReleaseFrameworkIosSimulatorArm64'
+      android-test-task:
+        description: 'Gradle task that runs the Android unit tests (set to empty string to skip)'
+        required: false
+        type: string
+        default: 'testDebugUnitTest'
+      ios-test-task:
+        description: 'Gradle task that runs the iOS simulator tests (set to empty string to skip)'
+        required: false
+        type: string
+        default: 'iosSimulatorArm64Test'
+      submodules:
+        description: 'Value forwarded to actions/checkout''s "submodules" input'
+        required: false
+        type: string
+        default: 'recursive'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kmp-pr-build-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & test (Android + iOS)
+    # Skipped for fork PRs: this job runs on a self-hosted runner, so executing untrusted
+    # Gradle/Rust build logic from a fork would expose persistent runner state and reachable
+    # infrastructure. Only PRs from branches within this same repository are built here.
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [ self-hosted, Android ]
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v6.0.3
+        with:
+          token: ${{ github.token }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      # Required by projects using the Gobley Cargo/UniFFI plugins for a Rust bridge module.
+      # Ensures `cargo` is on PATH for the Gradle process and the targets are installed.
+      - name: Setup Rust toolchain
+        if: inputs.rust-targets != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.rust-targets }}
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Stop any stale Gradle daemon so the build picks up the updated PATH (incl. cargo).
+      - name: Stop stale Gradle daemons
+        run: ./gradlew --stop
+
+      - name: Clean build environment
+        run: |
+          ./gradlew clean
+          rm -rf build .gradle release
+          if [ -n "${{ inputs.clean-paths }}" ]; then
+            while IFS= read -r path; do
+              [ -n "$path" ] && rm -rf "$path"
+            done <<< "${{ inputs.clean-paths }}"
+          fi
+
+      - name: Build with Gradle
+        if: inputs.build-task != ''
+        run: ./gradlew --parallel ${{ inputs.build-task }}
+
+      - name: Run Android Unit tests
+        if: inputs.android-test-task != ''
+        run: ./gradlew --parallel ${{ inputs.android-test-task }} --stacktrace
+
+      - name: Run iOS Unit tests
+        if: inputs.ios-test-task != ''
+        run: ./gradlew --parallel ${{ inputs.ios-test-task }} --stacktrace
