@@ -44,11 +44,6 @@ on:
         required: false
         type: string
         default: 'recursive'
-      extra-gradle-tasks:
-        description: 'Newline-separated extra Gradle tasks to run after the standard build/test steps (e.g. assembling a debug XCFramework to verify iOS packaging)'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -114,10 +109,3 @@ jobs:
       - name: Run iOS Unit tests
         if: inputs.ios-test-task != ''
         run: ./gradlew --parallel ${{ inputs.ios-test-task }} --stacktrace
-
-      - name: Run extra Gradle tasks
-        if: inputs.extra-gradle-tasks != ''
-        run: |
-          while IFS= read -r task; do
-            [ -n "$task" ] && ./gradlew --parallel "$task" --stacktrace
-          done <<< "${{ inputs.extra-gradle-tasks }}"
