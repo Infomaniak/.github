@@ -14,6 +14,13 @@
 #      Reposilite (via each repo's `publish-release-on-merged.yml` wrapper).
 name: Release KMP library
 
+concurrency:
+  # Serialized per repo (not per version, which isn't known until resolve-version runs): two
+  # concurrent releases could otherwise resolve the same version and then clobber/delete each
+  # other's release/* branch and draft release during the cleanup phase.
+  group: kmp-release-library-${{ github.repository }}
+  cancel-in-progress: false
+
 on:
   workflow_call:
     inputs:
@@ -255,9 +262,11 @@ jobs:
             release/*.xcframework.zip \
             --title "$VERSION" \
             --generate-notes \
+            --target "$BRANCH" \
             --draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: release/${{ env.VERSION }}
 
   publish-snapshot-android:
     name: Publish Android snapshot to Reposilite

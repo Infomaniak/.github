@@ -60,7 +60,10 @@ concurrency:
 jobs:
   build-and-test:
     name: Build & test (Android + iOS)
-    if: github.event.pull_request.draft == false
+    # Skipped for fork PRs: this job runs on a self-hosted runner, so executing untrusted
+    # Gradle/Rust build logic from a fork would expose persistent runner state and reachable
+    # infrastructure. Only PRs from branches within this same repository are built here.
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [ self-hosted, Android ]
     steps:
       - name: Checkout the code
