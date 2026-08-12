@@ -34,7 +34,7 @@ on:
         description: 'Gradle task that publishes the release artifacts'
         required: false
         type: string
-        default: 'publishAllPublicationToReposiliteRepository'
+        default: 'publishAllPublicationsToReposiliteRepository'
       version-property:
         description: 'Gradle project property used to pass the version to the build'
         required: false
