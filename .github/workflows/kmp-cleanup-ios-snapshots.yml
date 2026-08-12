@@ -37,18 +37,26 @@ jobs:
       - name: Delete iOS snapshot releases, tags and branches older than max-age-days
         run: |
           set -euo pipefail
+          # Compute the cutoff Unix timestamp: anything created before this is expired.
+          # macOS's `date -v` is tried first (self-hosted runner), falling back to GNU `date -d`.
           CUTOFF=$(date -u -v-"${{ inputs.max-age-days }}"d +%s 2>/dev/null || date -u -d "-${{ inputs.max-age-days }} days" +%s)
 
+          # List every prerelease whose tag starts with "ios-snapshot-" (up to 1000, i.e. all of
+          # them in practice), then loop over each as "TAG<TAB>CREATED_AT".
           gh release list --json tagName,isPrerelease,createdAt --limit 1000 \
             --jq '.[] | select(.isPrerelease and (.tagName | startswith("ios-snapshot-"))) | [.tagName, .createdAt] | @tsv' \
             | while IFS=$'\t' read -r TAG CREATED_AT; do
+                # Convert the release's creation date to a Unix timestamp (same macOS/GNU fallback as above).
                 CREATED_TS=$(date -u -d "$CREATED_AT" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED_AT" +%s)
                 if [ "$CREATED_TS" -lt "$CUTOFF" ]; then
                   echo "Deleting expired release/tag: $TAG (created $CREATED_AT)"
+                  # Delete the GitHub release itself, and its underlying Git tag.
                   gh release delete "$TAG" --yes --cleanup-tag || true
                   git push origin --delete "refs/tags/$TAG" 2>/dev/null || true
                   # Best-effort: derive and delete the matching spm-ios-snapshot-* branch (same id, ignoring the trailing build-id)
                   SNAPSHOT_ID=$(echo "$TAG" | sed -E 's/^ios-snapshot-//; s/-[0-9]{12}-[0-9]+-[0-9]+$//')
+                  # The release branch carries an extra build-id suffix the tag doesn't have, so
+                  # list matching remote branches with a wildcard rather than guessing the exact name.
                   git ls-remote --heads origin "refs/heads/spm-ios-snapshot-$SNAPSHOT_ID-*" \
                     | awk '{ sub("refs/heads/","",$2); print $2 }' \
                     | while IFS= read -r branch; do git push origin --delete "$branch" || true; done
