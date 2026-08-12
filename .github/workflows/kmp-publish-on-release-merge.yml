@@ -92,6 +92,7 @@ jobs:
     uses: Infomaniak/.github/.github/workflows/kmp-publish-reposilite-release.yml@v2
     with:
       version: ${{ needs.prepare.outputs.version }}
+      commit-sha: ${{ inputs.merge-commit-sha }}
       rust-targets: ${{ inputs.rust-targets }}
       clean-paths: ${{ inputs.clean-paths }}
       gradle-task: ${{ inputs.gradle-task }}
