@@ -310,3 +310,35 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-failure:
+    name: Notify KChat on failure
+    # Runs whenever either the iOS build or the Android snapshot publish failed, even though
+    # they're otherwise independent, so a broken release doesn't fail silently.
+    if: always() && (needs.build-xcframeworks.result == 'failure' || needs.publish-snapshot-android.result == 'failure')
+    needs: [ resolve-version, build-xcframeworks, publish-snapshot-android ]
+    runs-on: ubuntu-latest
+    env:
+      KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
+    steps:
+      - name: Notify KChat
+        if: env.KCHAT_KMP_WEBHOOK_URL != ''
+        env:
+          LIB_NAME: ${{ inputs.lib-name }}
+          IOS_RESULT: ${{ needs.build-xcframeworks.result }}
+          ANDROID_RESULT: ${{ needs.publish-snapshot-android.result }}
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TEXT="$(printf ':rotating_light: *%s %s* release failed!' "$LIB_NAME" "$VERSION")"
+          if [ "$IOS_RESULT" = "failure" ]; then
+            TEXT="$(printf '%s\n:apple: iOS XCFramework build failed' "$TEXT")"
+          fi
+          if [ "$ANDROID_RESULT" = "failure" ]; then
+            TEXT="$(printf '%s\n:android: Android snapshot publish failed' "$TEXT")"
+          fi
+          TEXT="$(printf '%s\n:link: %s' "$TEXT" "$RUN_URL")"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          curl -s -X POST "$KCHAT_KMP_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
