@@ -146,12 +146,11 @@ jobs:
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/$VERSION"
           COMMIT_LINK="${{ steps.commit-link.outputs.markdown-link }}"
           # "{VERSION}" in spm-line/android-line is replaced with the resolved release version.
-          # Real newlines (multi-module lines) are turned into literal "\n" so the payload
-          # stays valid single-line JSON while KChat still renders the line breaks.
+          # Real newlines are kept as-is: jq --arg below JSON-escapes them into a valid "\n"
+          # that KChat renders as a line break (manually pre-escaping here would cause jq to
+          # double-escape it into a literal backslash-n shown as-is in the message).
           SPM_LINE="${SPM_LINE//\{VERSION\}/$VERSION}"
-          SPM_LINE="${SPM_LINE//$'\n'/\\n}"
           ANDROID_LINE="${ANDROID_LINE//\{VERSION\}/$VERSION}"
-          ANDROID_LINE="${ANDROID_LINE//$'\n'/\\n}"
           TEXT="$(printf ':rocket: *%s %s* is now available!' "$LIB_NAME" "$VERSION")"
           if [ -n "$SPM_LINE" ]; then
             TEXT="$(printf '%s\n:apple: ```%s```' "$TEXT" "$SPM_LINE")"
