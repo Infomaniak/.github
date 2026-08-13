@@ -151,10 +151,8 @@ jobs:
         run: |
           COMMIT_LINK="${{ steps.commit-link.outputs.markdown-link }}"
           # "{VERSION}" in artifact-line is replaced with the resolved snapshot version.
-          # Real newlines are kept as-is: jq --arg below JSON-escapes them into a valid "\n"
-          # that KChat renders as a line break (manually pre-escaping here would cause jq to
-          # double-escape it into a literal backslash-n shown as-is in the message).
-          ARTIFACT_LINE="${ARTIFACT_LINE//\{VERSION\}/${{ env.SNAPSHOT_VERSION }}}"
+          ARTIFACT_LINE="$(printf '%s' "${ARTIFACT_LINE//\{VERSION\}/${{ env.SNAPSHOT_VERSION }}}")"
+          while [ -n "$ARTIFACT_LINE" ] && [ "${ARTIFACT_LINE: -1}" = $'\n' ]; do ARTIFACT_LINE="${ARTIFACT_LINE%$'\n'}"; done
           TEXT="$(printf ':android: *%s snapshot %s* is available on Reposilite Snapshots!' "$LIB_NAME" "${{ env.SNAPSHOT_VERSION }}")"
           if [ -n "$ARTIFACT_LINE" ]; then
             TEXT="$(printf '%s\n:package: ```%s```' "$TEXT" "$ARTIFACT_LINE")"
