@@ -62,7 +62,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.2.0
         with:
-          cache-provider: basic
+          # Runs on a self-hosted runner whose disk (and ~/.gradle) already persists between
+          # runs, so the actions/cache-based network cache only adds a slow upload/download
+          # round-trip for no benefit. Disable it and rely on the runner's local cache instead.
+          cache-disabled: true
 
       - name: Setup Rust toolchain
         if: inputs.rust-targets != ''
