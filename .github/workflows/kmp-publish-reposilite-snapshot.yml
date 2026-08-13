@@ -115,6 +115,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v5
+        with:
+          # Runs on a self-hosted runner whose disk (and ~/.gradle) already persists between
+          # runs, so the actions/cache-based network cache only adds a slow upload/download
+          # round-trip for no benefit. Disable it and rely on the runner's local cache instead.
+          cache-disabled: true
 
       - name: Perform a Gradle clean, as requested
         if: inputs.perform-a-gradle-clean
