@@ -54,6 +54,11 @@ on:
         required: false
         type: string
         default: ''
+      maven-group-path:
+        description: 'Maven group path (e.g. "com/infomaniak/multiplatform_swisstransfer") used to build the Reposilite releases URL shown in the KChat notification. Leave empty to omit the link'
+        required: false
+        type: string
+        default: ''
     secrets:
       REPOSILITE_USERNAME:
         required: true
@@ -141,6 +146,7 @@ jobs:
           LIB_NAME: ${{ inputs.lib-name }}
           SPM_LINE: ${{ inputs.spm-line }}
           ANDROID_LINE: ${{ inputs.android-line }}
+          MAVEN_GROUP_PATH: ${{ inputs.maven-group-path }}
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/$VERSION"
@@ -157,6 +163,9 @@ jobs:
           fi
           if [ -n "$ANDROID_LINE" ]; then
             TEXT="$(printf '%s\n:android: ```%s```' "$TEXT" "$ANDROID_LINE")"
+          fi
+          if [ -n "$MAVEN_GROUP_PATH" ]; then
+            TEXT="$(printf '%s\n:package: https://maven.infomaniak.app/releases/%s/' "$TEXT" "$MAVEN_GROUP_PATH")"
           fi
           TEXT="$(printf '%s\n:link: %s\n:pencil: Commit: %s' "$TEXT" "$RELEASE_URL" "$COMMIT_LINK")"
           PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
