@@ -113,9 +113,14 @@ jobs:
         run: command -v gh >/dev/null 2>&1 || brew install gh
 
       - name: Publish draft release
-        run: gh release edit "${{ needs.prepare.outputs.version }}" --draft=false --repo ${{ github.repository }}
+        # The draft release was created targeting the "release/<version>" branch, which
+        # GitHub deletes/loses once the PR is merged (squash/merge commit branches don't survive).
+        run: |
+          gh release edit "$VERSION" --draft=false --target "$MERGE_COMMIT_SHA" --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MERGE_COMMIT_SHA: ${{ inputs.merge-commit-sha }}
 
   notify:
     name: Notify KChat
