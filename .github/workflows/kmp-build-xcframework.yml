@@ -82,7 +82,9 @@ jobs:
           rm -rf build "${{ inputs.module }}/build" .gradle release
           if [ -n "${{ inputs.clean-paths }}" ]; then
             while IFS= read -r path; do
-              [ -n "$path" ] && rm -rf "$path"
+              if [ -n "$path" ]; then
+                rm -rf "$path"
+              fi
             done <<< "${{ inputs.clean-paths }}"
           fi
 
