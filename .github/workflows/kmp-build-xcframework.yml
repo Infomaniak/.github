@@ -119,7 +119,7 @@ jobs:
           mkdir -p release
           (
             cd "${{ inputs.module }}/build/XCFrameworks/release" || exit 1
-            zip -r "$GITHUB_WORKSPACE/release/${{ inputs.name }}.xcframework.zip" "${{ inputs.name }}.xcframework"
+            zip --symlinks -r "$GITHUB_WORKSPACE/release/${{ inputs.name }}.xcframework.zip" "${{ inputs.name }}.xcframework"
           )
 
       - name: Upload XCFramework artifact
