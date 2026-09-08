@@ -56,7 +56,7 @@ jobs:
                 curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$ARTIFACT" \
                   | jq -r '.files[]? | select(.type == "DIRECTORY") | .name' \
                   | while IFS= read -r VERSION; do
-                      LAST_MODIFIED=$(curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$ARTIFACT/$VERSION" | jq -r '.lastModifiedTime // empty')
+                      LAST_MODIFIED=$(curl -s -u "${REPOSILITE_USERNAME}:${REPOSILITE_PASSWORD}" "$BASE_URL/$ARTIFACT/$VERSION" | jq -r '[.files[]?.lastModifiedTime] | max // empty')
                       if [ -z "$LAST_MODIFIED" ]; then
                         continue
                       fi
