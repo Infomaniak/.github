@@ -3,6 +3,10 @@ name: Periphery
 on:
   workflow_call:
     inputs:
+      developer_dir:
+        required: false
+        type: string
+        default: /Applications/Xcode.app/Contents/Developer
       setup_step:
         required: false
         type: string
@@ -11,6 +15,8 @@ on:
 jobs:
   periphery:
     runs-on: [ self-hosted, iOS ]
+    env:
+      DEVELOPER_DIR: ${{ inputs.developer_dir }}
 
     steps:
       - name: Checkout
@@ -23,4 +29,4 @@ jobs:
       - name: Generate
         run: tuist install && tuist generate
       - name: Periphery
-        run: periphery scan --retain-codable-properties --format github-actions --relative-results --strict
+        run: periphery scan --clean-build --retain-assign-only-properties --retain-codable-properties --format github-actions --relative-results --strict
