@@ -78,14 +78,17 @@ assert_false "tag without a release is orphaned" \
 
 test_dir=$(mktemp -d)
 trap 'rm -f "$release_tags"; rm -rf "$test_dir"' EXIT
-mock_releases=$test_dir/mock-releases.json
+mock_release_pages=$test_dir/mock-release-pages.json
 mock_heads=$test_dir/mock-heads
 mock_tags=$test_dir/mock-tags
 mock_calls=$test_dir/calls
 
 gh() {
-  if [[ "$1" == "release" && "$2" == "list" ]]; then
-    cat "$mock_releases"
+  if [[ "$1" == "api" ]]; then
+    [[ " $* " == *" --paginate "* ]] || fail_test "release API call must paginate"
+    [[ " $* " == *" repos/owner/repo/releases?per_page=100 "* ]] \
+      || fail_test "release API call must target the requested repository"
+    cat "$mock_release_pages"
   elif [[ "$1" == "release" && "$2" == "delete" ]]; then
     printf 'release-delete %s\n' "$3" >> "$mock_calls"
   else
@@ -107,13 +110,15 @@ git() {
   fi
 }
 
-cat > "$mock_releases" <<'EOF'
+cat > "$mock_release_pages" <<'EOF'
 [
-  {"tagName":"ios-snapshot-1.2.3-jamy-202609011230-123-1","isPrerelease":true},
-  {"tagName":"ios-snapshot-1.2.3-jamy-202609011230","isPrerelease":true},
-  {"tagName":"ios-snapshot-1.2.3-jamy-20260901123045","isPrerelease":true},
-  {"tagName":"ios-snapshot-1.2.3-jamy-extra-202609011230-123-1","isPrerelease":true},
-  {"tagName":"ios-snapshot-1.2.3-other-202609011230-123-1","isPrerelease":true}
+  {"tag_name":"ios-snapshot-1.2.3-jamy-202609011230-123-1","prerelease":true,"created_at":"2026-09-01T12:00:00Z"},
+  {"tag_name":"ios-snapshot-1.2.3-jamy-202609011230","prerelease":true,"created_at":"2026-09-01T12:00:00Z"},
+  {"tag_name":"ios-snapshot-1.2.3-jamy-extra-202609011230-123-1","prerelease":true,"created_at":"2026-09-01T12:00:00Z"}
+]
+[
+  {"tag_name":"ios-snapshot-1.2.3-jamy-20260901123045","prerelease":true,"created_at":"2026-09-01T12:00:00Z"},
+  {"tag_name":"ios-snapshot-1.2.3-other-202609011230-123-1","prerelease":true,"created_at":"2026-09-01T12:00:00Z"}
 ]
 EOF
 cat > "$mock_heads" <<'EOF'
@@ -124,13 +129,15 @@ deadbeef	refs/heads/spm-ios-snapshot-1.2.3-jamy-extra-202609011230-123-1
 deadbeef	refs/heads/spm-ios-snapshot-1.2.3-other-202609011230-123-1
 EOF
 : > "$mock_calls"
-cleanup_same_label "$snapshot_id" origin "$test_dir"
+cleanup_same_label "$snapshot_id" origin owner/repo "$test_dir"
 assert_equal "6" "$(wc -l < "$mock_calls" | tr -d ' ')" \
   "same-label deletes three releases and three branches"
 assert_false "same-label preserves longer labels" \
   grep -Fq "jamy-extra" "$mock_calls"
 assert_false "same-label preserves different labels" \
   grep -Fq "other" "$mock_calls"
+assert_true "same-label includes matching release from a later page" \
+  grep -Fq "release-delete ios-snapshot-1.2.3-jamy-20260901123045" "$mock_calls"
 
 cutoff_timestamp() {
   parse_iso_timestamp "2026-09-03T12:00:00Z"
@@ -141,12 +148,14 @@ ref_timestamp() {
   parse_iso_timestamp "2026-09-01T12:00:00Z"
 }
 
-cat > "$mock_releases" <<'EOF'
+cat > "$mock_release_pages" <<'EOF'
 [
-  {"tagName":"ios-snapshot-1.0-202609011200-123-1","isPrerelease":true,"createdAt":"2026-09-01T12:00:00Z"},
-  {"tagName":"ios-snapshot-1.0-202609031200","isPrerelease":true,"createdAt":"2026-09-03T12:00:00Z"},
-  {"tagName":"ios-snapshot-1.0-202608011200","isPrerelease":false,"createdAt":"2026-08-01T12:00:00Z"},
-  {"tagName":"v2.8.2","isPrerelease":false,"createdAt":"2026-09-01T12:00:00Z"}
+  {"tag_name":"ios-snapshot-1.0-202609011200-123-1","prerelease":true,"created_at":"2026-09-01T12:00:00Z"},
+  {"tag_name":"ios-snapshot-1.0-202609031200","prerelease":true,"created_at":"2026-09-03T12:00:00Z"}
+]
+[
+  {"tag_name":"ios-snapshot-1.0-202608011200","prerelease":false,"created_at":"2026-08-01T12:00:00Z"},
+  {"tag_name":"v2.8.2","prerelease":false,"created_at":"2026-09-01T12:00:00Z"}
 ]
 EOF
 cat > "$mock_tags" <<'EOF'
@@ -159,7 +168,7 @@ deadbeef	refs/tags/ios-snapshot
 deadbeef	refs/tags/v2.8.2
 EOF
 : > "$mock_calls"
-cleanup_expired 15 origin "$test_dir"
+cleanup_expired 15 origin owner/repo "$test_dir"
 assert_true "expired prerelease is deleted" \
   grep -Fq "release-delete ios-snapshot-1.0-202609011200-123-1" "$mock_calls"
 assert_false "release at exact cutoff is preserved" \
@@ -179,5 +188,35 @@ assert_true "--help succeeds without GitHub credentials" "$SCRIPT_DIR/cleanup.sh
 if "$SCRIPT_DIR/cleanup.sh" expired --max-age-days invalid > /dev/null 2>&1; then
   fail_test "invalid max-age-days must fail"
 fi
+
+mock_bin=$test_dir/bin
+trapped_temp_dir=$test_dir/trapped-temp
+mkdir -p "$mock_bin"
+cat > "$mock_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" ]]; then
+  printf '[]\n'
+else
+  exit 1
+fi
+EOF
+cat > "$mock_bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "ls-remote" ]]; then
+  exit 0
+fi
+exit 1
+EOF
+cat > "$mock_bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$MOCK_TEMP_DIR"
+printf '%s\n' "$MOCK_TEMP_DIR"
+EOF
+chmod +x "$mock_bin/gh" "$mock_bin/git" "$mock_bin/mktemp"
+PATH="$mock_bin:$PATH" GH_TOKEN=test-token GITHUB_REPOSITORY=owner/repo \
+  MOCK_TEMP_DIR="$trapped_temp_dir" \
+  "$SCRIPT_DIR/cleanup.sh" same-label --snapshot-id no-match
+[[ ! -e "$trapped_temp_dir" ]] \
+  || fail_test "successful CLI execution must remove its temporary directory"
 
 echo "All cleanup iOS snapshot tests passed"

@@ -16,6 +16,10 @@ inputs:
   token:
     description: 'GitHub token with contents: write permission'
     required: true
+  repository:
+    description: 'Repository whose releases and refs are cleaned'
+    required: false
+    default: ${{ github.repository }}
 
 runs:
   using: composite
@@ -27,9 +31,10 @@ runs:
         CLEANUP_MODE: ${{ inputs.mode }}
         SNAPSHOT_ID: ${{ inputs.snapshot-id }}
         MAX_AGE_DAYS: ${{ inputs.max-age-days }}
+        REPOSITORY: ${{ inputs.repository }}
       run: |
         set -euo pipefail
-        args=("$CLEANUP_MODE")
+        args=("$CLEANUP_MODE" --repository "$REPOSITORY")
         case "$CLEANUP_MODE" in
           same-label)
             args+=(--snapshot-id "$SNAPSHOT_ID")

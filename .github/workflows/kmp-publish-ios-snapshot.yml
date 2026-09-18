@@ -136,6 +136,7 @@ jobs:
           mode: same-label
           snapshot-id: ${{ env.SNAPSHOT_ID }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
 
       - name: Update Package.swift on snapshot branch
         run: |

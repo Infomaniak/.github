@@ -8,14 +8,14 @@ readonly BUILD_SUFFIX_PATTERN='^([0-9]{12}(-[0-9]+-[0-9]+)?|[0-9]{14})$'
 usage() {
   cat <<'EOF'
 Usage:
-  cleanup.sh same-label --snapshot-id SNAPSHOT_ID [--remote REMOTE]
-  cleanup.sh expired --max-age-days DAYS [--remote REMOTE]
+  cleanup.sh same-label --snapshot-id SNAPSHOT_ID [--repository OWNER/REPO] [--remote REMOTE]
+  cleanup.sh expired --max-age-days DAYS [--repository OWNER/REPO] [--remote REMOTE]
 
 Modes:
   same-label  Delete prereleases and SPM branches for one exact snapshot id.
   expired     Delete expired prereleases, orphaned snapshot tags, and matching branches.
 
-Required commands: git, gh, jq, date, awk, grep, mktemp
+Required commands: git, gh, jq, date, awk, grep, mktemp, rm
 GH_TOKEN must grant contents: write access to the target repository.
 EOF
 }
@@ -31,7 +31,7 @@ require_command() {
 
 require_dependencies() {
   local command
-  for command in git gh jq date awk grep mktemp; do
+  for command in git gh jq date awk grep mktemp rm; do
     require_command "$command"
   done
 }
@@ -101,6 +101,40 @@ release_exists() {
   grep -Fqx "$tag" "$release_tags_file"
 }
 
+fetch_releases() {
+  local repository=$1
+  local output_file=$2
+  local pages_file=$3
+
+  gh api --method GET --paginate \
+    -H "Accept: application/vnd.github+json" \
+    "repos/${repository}/releases?per_page=100" > "$pages_file"
+  jq -s '[.[][] | {
+      tagName: .tag_name,
+      isPrerelease: .prerelease,
+      createdAt: .created_at
+    }]' "$pages_file" > "$output_file"
+}
+
+resolve_repository() {
+  local repository=$1
+
+  if [[ -n "$repository" ]]; then
+    printf '%s\n' "$repository"
+  elif [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+    printf '%s\n' "$GITHUB_REPOSITORY"
+  else
+    gh repo view --json nameWithOwner --jq '.nameWithOwner'
+  fi
+}
+
+cleanup_temp_dir() {
+  local path=$1
+
+  [[ -n "$path" && -d "$path" ]] || return 0
+  rm -rf -- "$path"
+}
+
 delete_matching_branch() {
   local tag=$1
   local remote=$2
@@ -123,18 +157,19 @@ ref_timestamp() {
 cleanup_same_label() {
   local snapshot_id=$1
   local remote=$2
-  local temp_dir=$3
+  local repository=$3
+  local temp_dir=$4
   local tag
   local branch
 
-  gh release list --json tagName,isPrerelease --limit 1000 > "$temp_dir/releases.json"
+  fetch_releases "$repository" "$temp_dir/releases.json" "$temp_dir/release-pages.json"
   jq -r '.[] | select(.isPrerelease) | .tagName' \
     "$temp_dir/releases.json" > "$temp_dir/prerelease-tags"
 
   while IFS= read -r tag; do
     if matches_snapshot_id_tag "$tag" "$snapshot_id"; then
       echo "Deleting previous snapshot release/tag: $tag"
-      gh release delete "$tag" --yes --cleanup-tag
+      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag
     fi
   done < "$temp_dir/prerelease-tags"
 
@@ -152,7 +187,8 @@ cleanup_same_label() {
 cleanup_expired() {
   local max_age_days=$1
   local remote=$2
-  local temp_dir=$3
+  local repository=$3
+  local temp_dir=$4
   local cutoff
   local tag
   local created_at
@@ -162,7 +198,7 @@ cleanup_expired() {
   cutoff=$(cutoff_timestamp "$max_age_days") \
     || fail "unable to compute cutoff date with the installed date command"
 
-  gh release list --json tagName,isPrerelease,createdAt --limit 1000 > "$temp_dir/releases.json"
+  fetch_releases "$repository" "$temp_dir/releases.json" "$temp_dir/release-pages.json"
   jq -r '.[] | select(
       .isPrerelease
       and (.tagName == "ios-snapshot" or (.tagName | startswith("ios-snapshot-")))
@@ -175,7 +211,7 @@ cleanup_expired() {
       || fail "unable to parse release creation date for $tag: $created_at"
     if is_strictly_older "$created_timestamp" "$cutoff"; then
       echo "Deleting expired release/tag: $tag (created $created_at)"
-      gh release delete "$tag" --yes --cleanup-tag
+      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag
       delete_matching_branch "$tag" "$remote"
     fi
   done < "$temp_dir/prereleases"
@@ -219,7 +255,9 @@ main() {
   local snapshot_id=
   local max_age_days=
   local remote=$DEFAULT_REMOTE
+  local repository=${GITHUB_REPOSITORY:-}
   local temp_dir
+  local cleanup_command
   shift
 
   while [[ $# -gt 0 ]]; do
@@ -237,6 +275,11 @@ main() {
       --remote)
         [[ $# -ge 2 ]] || fail "missing value for --remote"
         remote=$2
+        shift 2
+        ;;
+      --repository)
+        [[ $# -ge 2 ]] || fail "missing value for --repository"
+        repository=$2
         shift 2
         ;;
       -h|--help)
@@ -267,16 +310,23 @@ main() {
 
   require_dependencies
   [[ -n "${GH_TOKEN:-}" ]] || fail "GH_TOKEN must be set"
+  repository=$(resolve_repository "$repository") \
+    || fail "unable to determine repository; pass --repository OWNER/REPO"
+  [[ "$repository" == */* && "$repository" != */*/* ]] \
+    || fail "--repository must use OWNER/REPO format"
 
   temp_dir=$(mktemp -d)
-  trap 'rm -rf "$temp_dir"' EXIT
+  [[ -n "$temp_dir" && -d "$temp_dir" ]] || fail "mktemp did not create a temporary directory"
+  printf -v cleanup_command 'cleanup_temp_dir %q' "$temp_dir"
+  # shellcheck disable=SC2064 # Capture the validated temporary path before local variables leave scope.
+  trap "$cleanup_command" EXIT
 
   case "$mode" in
     same-label)
-      cleanup_same_label "$snapshot_id" "$remote" "$temp_dir"
+      cleanup_same_label "$snapshot_id" "$remote" "$repository" "$temp_dir"
       ;;
     expired)
-      cleanup_expired "$max_age_days" "$remote" "$temp_dir"
+      cleanup_expired "$max_age_days" "$remote" "$repository" "$temp_dir"
       ;;
   esac
 }

@@ -39,3 +39,4 @@ jobs:
           mode: expired
           max-age-days: ${{ inputs.max-age-days }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
