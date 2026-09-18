@@ -152,16 +152,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create snapshot release and upload assets
-        run: |
-          gh release create "ios-snapshot-$SNAPSHOT_ID-$BUILD_ID" \
-            release/*.xcframework.zip \
-            --title "iOS Snapshot $SNAPSHOT_ID ($BUILD_ID)" \
-            --notes "Snapshot build for version $VERSION. Not for production use." \
-            --prerelease
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Update Package.swift on snapshot branch
         run: |
           set -euo pipefail
@@ -182,6 +172,17 @@ jobs:
           git commit -m "chore: Update Package.swift snapshot to $SNAPSHOT_ID ($BUILD_ID)"
           git push origin "spm-ios-snapshot-$SNAPSHOT_ID-$BUILD_ID"
           echo "SPM_COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create snapshot release and upload assets
+        run: |
+          gh release create "ios-snapshot-$SNAPSHOT_ID-$BUILD_ID" \
+            release/*.xcframework.zip \
+            --title "iOS Snapshot $SNAPSHOT_ID ($BUILD_ID)" \
+            --notes "Snapshot build for version $VERSION. Not for production use." \
+            --prerelease \
+            --target "$SPM_COMMIT_SHA"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
