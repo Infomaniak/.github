@@ -1,0 +1,41 @@
+name: Cleanup iOS snapshots
+description: Delete previous or expired iOS snapshot releases, tags, and SPM branches
+
+inputs:
+  mode:
+    description: 'Cleanup mode: same-label or expired'
+    required: true
+  snapshot-id:
+    description: 'Exact snapshot id to clean in same-label mode'
+    required: false
+    default: ''
+  max-age-days:
+    description: 'Delete snapshots strictly older than this many days in expired mode'
+    required: false
+    default: '15'
+  token:
+    description: 'GitHub token with contents: write permission'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run iOS snapshot cleanup
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        CLEANUP_MODE: ${{ inputs.mode }}
+        SNAPSHOT_ID: ${{ inputs.snapshot-id }}
+        MAX_AGE_DAYS: ${{ inputs.max-age-days }}
+      run: |
+        set -euo pipefail
+        args=("$CLEANUP_MODE")
+        case "$CLEANUP_MODE" in
+          same-label)
+            args+=(--snapshot-id "$SNAPSHOT_ID")
+            ;;
+          expired)
+            args+=(--max-age-days "$MAX_AGE_DAYS")
+            ;;
+        esac
+        "${{ github.action_path }}/cleanup.sh" "${args[@]}"

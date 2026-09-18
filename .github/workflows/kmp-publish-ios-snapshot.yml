@@ -131,42 +131,11 @@ jobs:
           fi
 
       - name: Clean up previous snapshot releases, tags and branches (same label only)
-        run: |
-          set -euo pipefail
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-
-          # Match only this exact snapshot id and known build-id formats, so labels cannot overlap.
-          RELEASE_PREFIX="ios-snapshot-$SNAPSHOT_ID-"
-          gh release list --json tagName,isPrerelease --limit 1000 > "$TEMP_DIR/releases.json"
-          jq -r --arg prefix "$RELEASE_PREFIX" \
-            '.[] | select(
-              .isPrerelease
-              and (.tagName | startswith($prefix))
-              and (.tagName | ltrimstr($prefix) | test("^([0-9]{12}(-[0-9]+-[0-9]+)?|[0-9]{14})$"))
-            ) | .tagName' \
-            "$TEMP_DIR/releases.json" > "$TEMP_DIR/release-tags"
-
-          while IFS= read -r tag; do
-            gh release delete "$tag" --yes --cleanup-tag
-          done < "$TEMP_DIR/release-tags"
-
-          BRANCH_PREFIX="refs/heads/spm-ios-snapshot-$SNAPSHOT_ID-"
-          git ls-remote --heads origin > "$TEMP_DIR/remote-heads"
-          jq -Rr --arg prefix "$BRANCH_PREFIX" \
-            'split("\t")[1]
-            | select(startswith($prefix))
-            | ltrimstr("refs/heads/") as $branch
-            | ltrimstr($prefix) as $suffix
-            | select($suffix | test("^([0-9]{12}(-[0-9]+-[0-9]+)?|[0-9]{14})$"))
-            | $branch' \
-            "$TEMP_DIR/remote-heads" > "$TEMP_DIR/branches"
-
-          while IFS= read -r branch; do
-            git push origin --delete "$branch"
-          done < "$TEMP_DIR/branches"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: Infomaniak/.github/actions/cleanup-ios-snapshots@v2
+        with:
+          mode: same-label
+          snapshot-id: ${{ env.SNAPSHOT_ID }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Package.swift on snapshot branch
         run: |
