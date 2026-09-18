@@ -81,6 +81,9 @@ jobs:
     name: Publish snapshot release
     needs: build-xcframeworks
     runs-on: [ self-hosted, Android ]
+    concurrency:
+      group: infomaniak-kmp-ios-snapshot-mutations-${{ github.repository }}
+      cancel-in-progress: false
     env:
       VERSION: ${{ inputs.version }}
       KCHAT_KMP_WEBHOOK_URL: ${{ secrets.KCHAT_KMP_WEBHOOK_URL }}
@@ -131,26 +134,12 @@ jobs:
           fi
 
       - name: Clean up previous snapshot releases, tags and branches (same label only)
-        run: |
-          # Only delete previous ios-snapshot-* pre-releases/tags/branches matching this exact
-          # snapshot id (version[-label]) followed by a 12-digit build id, so concurrent snapshots
-          # for different labels (or unlabeled vs labeled) never collide with each other.
-          PATTERN="^ios-snapshot-$(printf '%s' "$SNAPSHOT_ID" | sed 's/[.[\*^$/]/\\&/g')-[0-9]{12}-[0-9]+-[0-9]+$"
-          gh release list --json tagName,isPrerelease \
-            --jq --arg pattern "$PATTERN" '.[] | select(.isPrerelease and (.tagName | test($pattern))) | .tagName' \
-            | while IFS= read -r tag; do
-                gh release delete "$tag" --yes --cleanup-tag || true
-                git push origin --delete "refs/tags/$tag" 2>/dev/null || true
-              done
-          # Delete matching remote spm-ios-snapshot-<same-id>-<12-digit-build-id> branches
-          BRANCH_PATTERN="^refs/heads/spm-ios-snapshot-$(printf '%s' "$SNAPSHOT_ID" | sed 's/[.[\*^$/]/\\&/g')-[0-9]{12}-[0-9]+-[0-9]+$"
-          git ls-remote --heads origin \
-            | awk '{ print $2 }' \
-            | grep -E "$BRANCH_PATTERN" \
-            | sed 's#refs/heads/##' \
-            | while IFS= read -r branch; do git push origin --delete "$branch" || true; done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: Infomaniak/.github/actions/cleanup-ios-snapshots@v2
+        with:
+          mode: same-label
+          snapshot-id: ${{ env.SNAPSHOT_ID }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
 
       - name: Update Package.swift on snapshot branch
         run: |
