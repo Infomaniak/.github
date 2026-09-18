@@ -15,7 +15,7 @@ Modes:
   same-label  Delete prereleases and SPM branches for one exact snapshot id.
   expired     Delete expired prereleases, orphaned snapshot tags, and matching branches.
 
-Required commands: git, gh, jq, date, awk, grep, mktemp, rm
+Required commands: git, gh, jq, date, awk, grep, mktemp, rm, tr
 GH_TOKEN must grant contents: write access to the target repository.
 EOF
 }
@@ -31,7 +31,7 @@ require_command() {
 
 require_dependencies() {
   local command
-  for command in git gh jq date awk grep mktemp rm; do
+  for command in git gh jq date awk grep mktemp rm tr; do
     require_command "$command"
   done
 }
@@ -46,7 +46,8 @@ matches_snapshot_id_tag() {
   local prefix="ios-snapshot-${snapshot_id}-"
 
   [[ "$tag" == "$prefix"* ]] || return 1
-  [[ "${tag#"$prefix"}" =~ $BUILD_SUFFIX_PATTERN ]]
+  [[ "${tag#"$prefix"}" =~ $BUILD_SUFFIX_PATTERN ]] || return 1
+  tag_timestamp "$tag" >/dev/null
 }
 
 matches_snapshot_id_branch() {
@@ -55,7 +56,8 @@ matches_snapshot_id_branch() {
   local prefix="spm-ios-snapshot-${snapshot_id}-"
 
   [[ "$branch" == "$prefix"* ]] || return 1
-  [[ "${branch#"$prefix"}" =~ $BUILD_SUFFIX_PATTERN ]]
+  [[ "${branch#"$prefix"}" =~ $BUILD_SUFFIX_PATTERN ]] || return 1
+  tag_timestamp "${branch#spm-}" >/dev/null
 }
 
 parse_iso_timestamp() {
@@ -65,10 +67,18 @@ parse_iso_timestamp() {
     || date -u -d "$value" +%s 2>/dev/null
 }
 
+format_timestamp() {
+  local value=$1
+
+  date -u -r "$value" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+    || date -u -d "@$value" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null
+}
+
 tag_timestamp() {
   local tag=$1
   local stamp
   local normalized
+  local timestamp
 
   if [[ "$tag" =~ -([0-9]{14})$ ]]; then
     stamp=${BASH_REMATCH[1]}
@@ -80,7 +90,13 @@ tag_timestamp() {
     return 1
   fi
 
-  parse_iso_timestamp "$normalized"
+  timestamp=$(parse_iso_timestamp "$normalized") || return 1
+  [[ "$(format_timestamp "$timestamp")" == "$normalized" ]] || return 1
+  printf '%s\n' "$timestamp"
+}
+
+is_recognized_snapshot_tag() {
+  [[ "$1" == "ios-snapshot" ]] || tag_timestamp "$1" >/dev/null
 }
 
 cutoff_timestamp() {
@@ -99,6 +115,13 @@ release_exists() {
   local release_tags_file=$2
 
   grep -Fqx "$tag" "$release_tags_file"
+}
+
+tag_ref_exists() {
+  local tag=$1
+  local snapshot_tags_file=$2
+
+  grep -Fqx "$tag" "$snapshot_tags_file"
 }
 
 fetch_releases() {
@@ -135,15 +158,85 @@ cleanup_temp_dir() {
   rm -rf -- "$path"
 }
 
+normalize_github_remote_url() {
+  local url
+  local path
+
+  url=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$url" in
+    https://github.com/*)
+      path=${url#https://github.com/}
+      ;;
+    git@github.com:*)
+      path=${url#git@github.com:}
+      ;;
+    ssh://git@github.com/*)
+      path=${url#ssh://git@github.com/}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  path=${path%/}
+  path=${path%.git}
+  [[ "$path" == */* && "$path" != */*/* ]] || return 1
+  printf '%s\n' "$path"
+}
+
+validate_repository_remote() {
+  local repository=$1
+  local remote=$2
+  local remote_urls
+  local remote_url
+  local remote_repository
+  local normalized_repository
+
+  normalized_repository=$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')
+
+  remote_urls=$(git remote get-url --all "$remote") \
+    || fail "unable to resolve Git remote fetch URLs: $remote"
+  [[ -n "$remote_urls" ]] || fail "Git remote has no fetch URL: $remote"
+  while IFS= read -r remote_url; do
+    remote_repository=$(normalize_github_remote_url "$remote_url") \
+      || fail "unsupported or invalid GitHub remote URL: $remote_url"
+    [[ "$remote_repository" == "$normalized_repository" ]] \
+      || fail "repository mismatch: --repository is $repository but $remote fetches from $remote_repository"
+  done <<< "$remote_urls"
+
+  remote_urls=$(git remote get-url --push --all "$remote") \
+    || fail "unable to resolve Git remote push URLs: $remote"
+  [[ -n "$remote_urls" ]] || fail "Git remote has no push URL: $remote"
+  while IFS= read -r remote_url; do
+    remote_repository=$(normalize_github_remote_url "$remote_url") \
+      || fail "unsupported or invalid GitHub push URL: $remote_url"
+    [[ "$remote_repository" == "$normalized_repository" ]] \
+      || fail "repository mismatch: --repository is $repository but $remote pushes to $remote_repository"
+  done <<< "$remote_urls"
+}
+
 delete_matching_branch() {
   local tag=$1
   local remote=$2
   local branch="spm-${tag}"
+  local status
 
-  if git ls-remote --exit-code --heads "$remote" "refs/heads/$branch" >/dev/null 2>&1; then
-    echo "Deleting matching branch: $branch"
-    git push "$remote" --delete "$branch"
-  fi
+  set +e
+  git ls-remote --exit-code --heads "$remote" "refs/heads/$branch" >/dev/null
+  status=$?
+  set -e
+  case "$status" in
+    0)
+      echo "Deleting matching branch: $branch"
+      git push "$remote" --delete "$branch" \
+        || fail "unable to delete matching branch: $branch"
+      ;;
+    2)
+      ;;
+    *)
+      fail "unable to check matching branch: $branch"
+      ;;
+  esac
 }
 
 ref_timestamp() {
@@ -163,23 +256,43 @@ cleanup_same_label() {
   local branch
 
   fetch_releases "$repository" "$temp_dir/releases.json" "$temp_dir/release-pages.json"
+  git ls-remote --tags "$remote" "refs/tags/ios-snapshot*" \
+    | awk '$2 !~ /\^\{\}$/ { sub("refs/tags/", "", $2); print $2 }' \
+    | awk '$0 == "ios-snapshot" || /^ios-snapshot-/' > "$temp_dir/snapshot-tags"
+  git ls-remote --heads "$remote" \
+    | awk '{ sub("refs/heads/", "", $2); print $2 }' > "$temp_dir/branches"
+
   jq -r '.[] | select(.isPrerelease) | .tagName' \
     "$temp_dir/releases.json" > "$temp_dir/prerelease-tags"
+  jq -r '.[].tagName' "$temp_dir/releases.json" > "$temp_dir/release-tags"
 
   while IFS= read -r tag; do
     if matches_snapshot_id_tag "$tag" "$snapshot_id"; then
       echo "Deleting previous snapshot release/tag: $tag"
-      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag
+      delete_matching_branch "$tag" "$remote"
+      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag \
+        || fail "unable to delete previous snapshot release/tag: $tag"
     fi
   done < "$temp_dir/prerelease-tags"
 
-  git ls-remote --heads "$remote" \
-    | awk '{ sub("refs/heads/", "", $2); print $2 }' > "$temp_dir/branches"
+  while IFS= read -r tag; do
+    if matches_snapshot_id_tag "$tag" "$snapshot_id" \
+      && ! release_exists "$tag" "$temp_dir/release-tags"; then
+      echo "Deleting previous orphan snapshot tag: $tag"
+      delete_matching_branch "$tag" "$remote"
+      git push "$remote" --delete "refs/tags/$tag" \
+        || fail "unable to delete previous orphan snapshot tag: $tag"
+    fi
+  done < "$temp_dir/snapshot-tags"
 
   while IFS= read -r branch; do
-    if matches_snapshot_id_branch "$branch" "$snapshot_id"; then
+    tag=${branch#spm-}
+    if matches_snapshot_id_branch "$branch" "$snapshot_id" \
+      && ! release_exists "$tag" "$temp_dir/release-tags" \
+      && ! tag_ref_exists "$tag" "$temp_dir/snapshot-tags"; then
       echo "Deleting previous snapshot branch: $branch"
-      git push "$remote" --delete "$branch"
+      git push "$remote" --delete "$branch" \
+        || fail "unable to delete previous snapshot branch: $branch"
     fi
   done < "$temp_dir/branches"
 }
@@ -207,12 +320,17 @@ cleanup_expired() {
   jq -r '.[].tagName' "$temp_dir/releases.json" > "$temp_dir/release-tags"
 
   while IFS=$'\t' read -r tag created_at; do
+    if ! is_recognized_snapshot_tag "$tag"; then
+      echo "::warning::Preserving unrecognized snapshot prerelease: $tag" >&2
+      continue
+    fi
     created_timestamp=$(parse_iso_timestamp "$created_at") \
       || fail "unable to parse release creation date for $tag: $created_at"
     if is_strictly_older "$created_timestamp" "$cutoff"; then
       echo "Deleting expired release/tag: $tag (created $created_at)"
-      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag
       delete_matching_branch "$tag" "$remote"
+      gh release delete "$tag" --repo "$repository" --yes --cleanup-tag \
+        || fail "unable to delete expired release/tag: $tag"
     fi
   done < "$temp_dir/prereleases"
 
@@ -225,18 +343,22 @@ cleanup_expired() {
       continue
     fi
 
-    if created_timestamp=$(tag_timestamp "$tag"); then
+    if [[ "$tag" == "ios-snapshot" ]]; then
+      created_timestamp=$(ref_timestamp "$tag" "$remote") \
+        || fail "unable to determine target commit date for legacy orphan tag: $tag"
+      age_source="tag target commit date"
+    elif created_timestamp=$(tag_timestamp "$tag"); then
       age_source="timestamp encoded in tag"
     else
-      created_timestamp=$(ref_timestamp "$tag" "$remote") \
-        || fail "unable to determine target commit date for orphan tag: $tag"
-      age_source="tag target commit date"
+      echo "::warning::Preserving unrecognized orphan snapshot tag: $tag" >&2
+      continue
     fi
 
     if is_strictly_older "$created_timestamp" "$cutoff"; then
       echo "Deleting expired orphan tag: $tag ($age_source)"
-      git push "$remote" --delete "refs/tags/$tag"
       delete_matching_branch "$tag" "$remote"
+      git push "$remote" --delete "refs/tags/$tag" \
+        || fail "unable to delete expired orphan tag: $tag"
     fi
   done < "$temp_dir/snapshot-tags"
 }
@@ -314,6 +436,7 @@ main() {
     || fail "unable to determine repository; pass --repository OWNER/REPO"
   [[ "$repository" == */* && "$repository" != */*/* ]] \
     || fail "--repository must use OWNER/REPO format"
+  validate_repository_remote "$repository" "$remote"
 
   temp_dir=$(mktemp -d)
   [[ -n "$temp_dir" && -d "$temp_dir" ]] || fail "mktemp did not create a temporary directory"

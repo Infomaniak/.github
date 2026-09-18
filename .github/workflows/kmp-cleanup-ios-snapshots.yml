@@ -24,6 +24,9 @@ jobs:
   cleanup-ios-snapshots:
     name: Cleanup old iOS snapshots
     runs-on: [ self-hosted, Android ]
+    concurrency:
+      group: infomaniak-kmp-ios-snapshot-mutations-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
