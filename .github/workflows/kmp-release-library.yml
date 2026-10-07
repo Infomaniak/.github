@@ -141,19 +141,19 @@ jobs:
                 if [ "$IS_DRAFT" = "true" ]; then
                   gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
                 fi
-                git push origin --delete "refs/heads/$BRANCH" || true
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" || true
               done
 
           # Also prune orphan release branches left over by a run that failed before a PR was
           # ever opened (so the loop above, which is keyed off open PRs, would miss them).
-          git ls-remote --heads origin "refs/heads/release/*" | awk '{print $2}' | sed 's#refs/heads/##' \
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/" --jq '.[].ref' | sed 's#refs/heads/##' \
             | while IFS= read -r BRANCH; do
                 VERSION_TO_DELETE="${BRANCH#release/}"
                 IS_DRAFT=$(gh release view "$VERSION_TO_DELETE" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")
                 if [ "$IS_DRAFT" = "true" ]; then
                   gh release delete "$VERSION_TO_DELETE" --yes --cleanup-tag || true
                 fi
-                git push origin --delete "refs/heads/$BRANCH" || true
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" || true
               done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
