@@ -1,15 +1,17 @@
 name: Cleanup ESDS Branches
 
-# Deletes every "esds/x.y.z" or "esds/x.y.z-*" branch (and closes its associated open PR, if any) whose
-# version is lower than or equal to the version of the branch whose PR was just closed
-# (merged or not). This keeps the repo clean by removing the current release's leftover
-# branches as well as any branch left over from older, now-superseded releases.
+# Deletes every "esds/<package>/x.y.z" or "esds/<package>/x.y.z-*" branch (and closes its associated
+# open PR, if any) of the same <package> whose version is lower than or equal to the version of the
+# branch whose PR was just closed (merged or not). This keeps the repo clean by removing the current
+# release's leftover branches as well as any branch left over from older, now-superseded releases.
+# Packages are versioned independently (e.g. tokens vs symbols), so other packages are never touched.
+# Unscoped legacy branches ("esds/x.y.z-*") are ignored and must be cleaned up manually.
 
 on:
   workflow_call:
     inputs:
       head_ref:
-        description: 'Head branch ref of the esds closed pull request (e.g. esds/0.1.2 or esds/0.1.2-rc.1783322025938).'
+        description: 'Head branch ref of the esds closed pull request (e.g. esds/tokens/0.1.2 or esds/symbols/0.1.2-rc.1783322025938).'
         required: true
         type: string
 
@@ -28,23 +30,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$HEAD_REF" =~ ^esds/([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
-            CURRENT_VERSION="${BASH_REMATCH[1]}"
+          BRANCH_PATTERN='^esds/([^/]+)/([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$'
+
+          if [[ "$HEAD_REF" =~ $BRANCH_PATTERN ]]; then
+            CURRENT_PACKAGE="${BASH_REMATCH[1]}"
+            CURRENT_VERSION="${BASH_REMATCH[2]}"
           else
-            echo "Error: branch '$HEAD_REF' does not match the expected esds/x.y.z or esds/x.y.z-* pattern."
-            exit 1
+            echo "::notice::Branch '$HEAD_REF' does not match the expected esds/<package>/x.y.z or esds/<package>/x.y.z-* pattern, nothing to clean up."
+            exit 0
           fi
-          echo "Merged version: $CURRENT_VERSION"
+          echo "Merged package: $CURRENT_PACKAGE, version: $CURRENT_VERSION"
 
           git fetch origin 'refs/heads/esds/*:refs/remotes/origin/esds/*' --prune
 
           git branch -r --list 'origin/esds/*' | sed -E 's#^[[:space:]]*origin/##' | while IFS= read -r branch; do
             [ -z "$branch" ] && continue
 
-            if [[ "$branch" =~ ^esds/([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
-              version="${BASH_REMATCH[1]}"
+            if [[ "$branch" =~ $BRANCH_PATTERN ]]; then
+              package="${BASH_REMATCH[1]}"
+              version="${BASH_REMATCH[2]}"
             else
-              echo "Skipping '$branch': does not match the expected esds/x.y.z or esds/x.y.z-* pattern."
+              echo "Skipping '$branch': does not match the expected esds/<package>/x.y.z or esds/<package>/x.y.z-* pattern."
+              continue
+            fi
+
+            if [ "$package" != "$CURRENT_PACKAGE" ]; then
+              echo "Skipping '$branch': package '$package' differs from '$CURRENT_PACKAGE'."
               continue
             fi
 
@@ -59,7 +70,7 @@ jobs:
             gh pr list --state open --head "$branch" --json number --jq '.[].number' | while IFS= read -r pr_number; do
               [ -z "$pr_number" ] && continue
               echo "Closing PR #$pr_number for branch '$branch'"
-              gh pr close "$pr_number" --comment "Closed automatically: superseded by the release of version $CURRENT_VERSION." || true
+              gh pr close "$pr_number" --comment "Closed automatically: superseded by the release of $CURRENT_PACKAGE version $CURRENT_VERSION." || true
             done
 
             git push origin --delete "$branch" || true
