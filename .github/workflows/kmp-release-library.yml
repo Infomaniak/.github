@@ -181,7 +181,6 @@ jobs:
       rust-targets: ${{ inputs.rust-targets }}
       clean-paths: ${{ inputs.clean-paths }}
       submodules: ${{ inputs.submodules }}
-      runner: '["Android","Powerful"]'
 
   release-and-draft:
     name: Update Package.swift and draft GitHub Release
