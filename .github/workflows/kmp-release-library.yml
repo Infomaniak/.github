@@ -111,7 +111,7 @@ on:
 jobs:
   cleanup-stale-release:
     name: Close stale release PRs/branches/drafts
-    runs-on: [ self-hosted, Android ]
+    runs-on: [ self-hosted, Android, Powerful ]
     permissions:
       contents: write
       pull-requests: write
@@ -185,7 +185,7 @@ jobs:
   release-and-draft:
     name: Update Package.swift and draft GitHub Release
     needs: [ resolve-version, build-xcframeworks ]
-    runs-on: [ self-hosted, Android ]
+    runs-on: [ self-hosted, Android, Powerful ]
     permissions:
       contents: write
       pull-requests: write

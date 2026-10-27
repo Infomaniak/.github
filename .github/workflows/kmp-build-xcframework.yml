@@ -52,7 +52,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ inputs.name }}.xcframework
-    runs-on: [ self-hosted, Android ]
+    runs-on: [ self-hosted, Android, Powerful ]
     steps:
       - name: Checkout the code
         uses: actions/checkout@v6.0.3

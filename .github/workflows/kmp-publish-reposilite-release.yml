@@ -62,7 +62,7 @@ permissions: {}
 
 jobs:
   publish:
-    runs-on: [ self-hosted, Android ]
+    runs-on: [ self-hosted, Android, Powerful ]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v6.0.3
