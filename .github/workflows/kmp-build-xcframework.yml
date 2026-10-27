@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: 'recursive'
+      runner:
+        description: 'JSON array of runner labels for the build job, e.g. ''["Android","Powerful"]'''
+        required: false
+        type: string
+        default: '["self-hosted","Android"]'
 
 permissions:
   contents: read
@@ -52,7 +57,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ inputs.name }}.xcframework
-    runs-on: [ self-hosted, Android ]
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - name: Checkout the code
         uses: actions/checkout@v6.0.3
