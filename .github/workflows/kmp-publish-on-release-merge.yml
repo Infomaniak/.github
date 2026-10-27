@@ -80,7 +80,7 @@ jobs:
   prepare:
     name: Extract release version
     if: inputs.merged == true && startsWith(inputs.head-ref, 'release/')
-    runs-on: [ Android, Powerful ]
+    runs-on: [ self-hosted, Android, Powerful ]
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -112,7 +112,7 @@ jobs:
   undraft-release:
     name: Undraft GitHub Release
     needs: [ prepare, publish-android ]
-    runs-on: [ Android, Powerful ]
+    runs-on: [ self-hosted, Android, Powerful ]
     steps:
       - name: Setup gh CLI
         run: command -v gh >/dev/null 2>&1 || brew install gh
